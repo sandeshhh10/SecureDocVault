@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>SecureDoc — {% if register_mode %}Create Account{% else %}Sign In{% endif %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:        #080c12;
+      --surface:   #0e1420;
+      --border:    #1e2d47;
+      --border-hi: #2a4a7f;
+      --accent:    #3b82f6;
+      --accent-dk: #1d4ed8;
+      --text:      #cbd5e1;
+      --text-dim:  #475569;
+      --text-hi:   #f1f5f9;
+      --mono:      'DM Mono', monospace;
+      --sans:      'Syne', sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      font-family: var(--sans);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; position: relative;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(59,130,246,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+    }
+    body::after {
+      content: '';
+      position: fixed; width: 600px; height: 600px;
+      left: 50%; top: 50%; transform: translate(-50%, -60%);
+      background: radial-gradient(circle, rgba(59,130,246,0.07) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .scanlines {
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 3px,
+        rgba(0,0,0,0.025) 3px, rgba(0,0,0,0.025) 4px);
+      pointer-events: none; z-index: 0;
+    }
+
+    .auth-card {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 440px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2.8rem 3rem;
+      box-shadow: 0 0 0 1px rgba(59,130,246,0.06),
+                  0 40px 80px rgba(0,0,0,0.6),
+                  inset 0 1px 0 rgba(255,255,255,0.03);
+      animation: card-in 0.45s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    @keyframes card-in {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .auth-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2rem; }
+    .auth-logo {
+      width: 34px; height: 34px;
+      border: 1px solid var(--border-hi);
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-size: 0.72rem;
+      color: var(--accent); letter-spacing: 1px; position: relative;
+    }
+    .auth-logo::before {
+      content: ''; position: absolute; inset: 3px;
+      border: 1px solid rgba(59,130,246,0.2);
+    }
+    .auth-wordmark {
+      font-family: var(--mono); font-size: 0.78rem; font-weight: 500;
+      letter-spacing: 0.18em; color: var(--text-dim); text-transform: uppercase;
+    }
+    .auth-wordmark span { color: var(--accent); }
+
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      font-family: var(--mono); font-size: 0.67rem;
+      color: var(--text-dim); letter-spacing: 0.06em; margin-bottom: 1.8rem;
+    }
+    .status-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #22c55e; box-shadow: 0 0 6px #22c55e;
+      animation: pulse-dot 2.5s ease-in-out infinite;
+    }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    .auth-title {
+      font-family: var(--sans); font-size: 1.55rem; font-weight: 800;
+      color: var(--text-hi); letter-spacing: -0.02em; line-height: 1.1;
+      margin-bottom: 0.35rem;
+    }
+    .auth-subtitle {
+      font-family: var(--mono); font-size: 0.72rem; color: var(--text-dim);
+      letter-spacing: 0.04em; margin-bottom: 1.9rem;
+    }
+
+    .field-label {
+      display: block; font-family: var(--mono); font-size: 0.68rem;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--text-dim); margin-bottom: 0.45rem;
+    }
+    .field-wrap { margin-bottom: 1.25rem; }
+    .field-input {
+      width: 100%; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 2px;
+      color: var(--text-hi); font-family: var(--mono); font-size: 0.87rem;
+      padding: 0.68rem 0.9rem; outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .field-input::placeholder { color: var(--text-dim); }
+    .field-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+    }
+
+    .auth-error {
+      background: rgba(239,68,68,0.07);
+      border: 1px solid rgba(239,68,68,0.22);
+      border-left: 3px solid #ef4444;
+      border-radius: 2px; padding: 0.62rem 0.9rem; margin-bottom: 1.3rem;
+      font-family: var(--mono); font-size: 0.77rem; color: #fca5a5;
+      letter-spacing: 0.02em;
+    }
+
+    .auth-btn {
+      width: 100%; background: var(--accent);
+      border: none; border-radius: 2px; color: #fff;
+      font-family: var(--sans); font-size: 0.86rem; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase; padding: 0.76rem;
+      cursor: pointer; transition: background 0.2s, box-shadow 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .auth-btn::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.08), transparent);
+    }
+    .auth-btn:hover { background: var(--accent-dk); box-shadow: 0 4px 20px rgba(59,130,246,0.3); }
+
+    .auth-footer {
+      text-align: center; margin-top: 1.5rem;
+      font-family: var(--mono); font-size: 0.7rem;
+      color: var(--text-dim); letter-spacing: 0.04em;
+    }
+    .auth-footer a { color: var(--accent); text-decoration: none; }
+    .auth-footer a:hover { text-decoration: underline; }
+
+    .divider {
+      display: flex; align-items: center; gap: 0.75rem; margin: 1.6rem 0;
+    }
+    .divider::before, .divider::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .divider span {
+      font-family: var(--mono); font-size: 0.62rem;
+      color: var(--text-dim); letter-spacing: 0.1em;
+    }
+
+    .cert-strip {
+      display: flex; align-items: center; justify-content: center; gap: 1.1rem;
+      margin-top: 1.7rem; padding-top: 1.3rem; border-top: 1px solid var(--border);
+    }
+    .cert-item {
+      font-family: var(--mono); font-size: 0.61rem;
+      color: var(--text-dim); letter-spacing: 0.06em;
+    }
+  </style>
+</head>
+<body>
+<div class="scanlines"></div>
+<div class="auth-card">
+
+  <div class="auth-header">
+    <div class="auth-logo">SD</div>
+    <div class="auth-wordmark">Secure<span>Doc</span></div>
+  </div>
+
+  <div class="status-badge">
+    <span class="status-dot"></span>
+    SYSTEM ONLINE · AES-256 · VAULT READY
+  </div>
+
+  <h1 class="auth-title">
+    {% if register_mode %}Create account{% else %}Sign in{% endif %}
+  </h1>
+  <p class="auth-subtitle">
+    {% if register_mode %}ENCRYPTED VAULT REGISTRATION{% else %}AUTHENTICATED ACCESS REQUIRED{% endif %}
+  </p>
+
+  {% if error %}<div class="auth-error">⚠&nbsp;&nbsp;{{ error }}</div>{% endif %}
+
+  <form method="POST" action="{% if register_mode %}/register{% else %}/login{% endif %}">
+    <label class="field-label" for="username">Identifier</label>
+    <div class="field-wrap">
+      <input class="field-input" id="username" name="username" type="text"
+             placeholder="username" value="{{ username or '' }}"
+             autocomplete="username" required/>
+    </div>
+
+    <label class="field-label" for="password">
+      {% if register_mode %}Passphrase{% else %}Secret{% endif %}
+    </label>
+    <div class="field-wrap">
+      <input class="field-input" id="password" name="password" type="password"
+             placeholder="••••••••••••••"
+             autocomplete="{% if register_mode %}new-password{% else %}current-password{% endif %}"
+             required/>
+    </div>
+
+    {% if register_mode %}
+    <div class="divider"><span>VAULT WILL BE ENCRYPTED ON CREATION</span></div>
+    {% endif %}
+
+    <button class="auth-btn" type="submit">
+      {% if register_mode %}Initialise Vault{% else %}Authenticate{% endif %}
+    </button>
+  </form>
+
+  <div class="auth-footer">
+    {% if register_mode %}
+      Already have a vault? <a href="/login">Sign in</a>
+    {% else %}
+      No vault yet? <a href="/register">Create one</a>
+    {% endif %}
+  </div>
+
+  <div class="cert-strip">
+    <span class="cert-item">🔒 AES-256-GCM</span>
+    <span class="cert-item">⬡ PBKDF2 · 200K</span>
+    <span class="cert-item">◈ ISOLATED LOG</span>
+  </div>
+
+</div>
+</body>
+</html>

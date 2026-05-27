@@ -1,0 +1,101 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+.python-version
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / coverage
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Editor / OS files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+logs/*
+!logs/.gitkeep
+secure_doc.db
+*.sqlite3
+
+# Temporary files
+.tmp/
+tmp/
+*.tmp
+
+# Compiled C extensions
+*.so
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Enron / raw datasets and large generated data
+raw data/
+raw data/**
+enron_spam_data/
+enron_spam_data/**
+
+# Vault contents (keep repo folder structure but ignore stored documents)
+# Ignore everything inside vault by default
+vault/**
+
+# Un-ignore the placeholder files to keep the structures
+!vault/.gitkeep
+!vault/real/
+!vault/real/.gitkeep
+!vault/decoy/
+!vault/decoy/.gitkeep
+
+
+# Local test artifacts and results
+test_results.txt
+tests/results/
+
+# Environment / secrets
+.env
+.env.*
+secrets.json
+secrets.yml
+*.pem
+*.key
+
+# Misc caches
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Windows
+ehthumbs.db
+Icon?
+
+*.db-wal
+*.db-shm

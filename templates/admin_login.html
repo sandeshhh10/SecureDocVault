@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>SecureDoc — Admin</title>
+  <style>
+    :root {
+      --bg:       #070a0f;
+      --surface:  #0d1117;
+      --border:   #1a2332;
+      --accent:   #e85d00;
+      --text:     #8b9cb0;
+      --text-hi:  #dce6f0;
+      --text-dim: #3d5066;
+      --danger:   #c0392b;
+      --mono:     'Courier New', Courier, monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      font-family: var(--mono);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* Subtle grid */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(232,93,0,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(232,93,0,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    .card {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 380px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: 2px solid var(--accent);
+      padding: 2.4rem 2.6rem;
+      box-shadow: 0 32px 64px rgba(0,0,0,0.7);
+    }
+
+    /* Header */
+    .admin-header {
+      display: flex; align-items: center; gap: 0.7rem;
+      margin-bottom: 2rem;
+    }
+    .admin-icon {
+      width: 32px; height: 32px;
+      border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent); font-size: 0.85rem;
+    }
+    .admin-wordmark {
+      font-size: 0.72rem; letter-spacing: 0.2em;
+      text-transform: uppercase; color: var(--text-dim);
+    }
+    .admin-wordmark span { color: var(--accent); }
+
+    h1 {
+      font-size: 1.1rem; font-weight: normal;
+      color: var(--text-hi); letter-spacing: 0.04em;
+      margin-bottom: 0.3rem;
+    }
+    .sub {
+      font-size: 0.68rem; color: var(--text-dim);
+      letter-spacing: 0.08em; text-transform: uppercase;
+      margin-bottom: 1.8rem;
+    }
+
+    /* Field */
+    label {
+      display: block; font-size: 0.65rem;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-dim); margin-bottom: 0.4rem;
+    }
+    input[type=password] {
+      width: 100%; background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-hi); font-family: var(--mono); font-size: 0.85rem;
+      padding: 0.65rem 0.8rem; outline: none;
+      transition: border-color 0.18s; margin-bottom: 1.4rem;
+      letter-spacing: 0.08em;
+    }
+    input[type=password]:focus { border-color: var(--accent); }
+
+    /* Error */
+    .error {
+      background: rgba(192,57,43,0.08);
+      border: 1px solid rgba(192,57,43,0.3);
+      border-left: 3px solid var(--danger);
+      padding: 0.55rem 0.8rem; margin-bottom: 1.2rem;
+      font-size: 0.75rem; color: #e57373;
+    }
+
+    /* Button */
+    button {
+      width: 100%; background: var(--accent);
+      border: none; color: #fff;
+      font-family: var(--mono); font-size: 0.78rem;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      padding: 0.7rem; cursor: pointer;
+      transition: opacity 0.18s;
+    }
+    button:hover { opacity: 0.85; }
+
+    /* Footer */
+    .card-footer {
+      margin-top: 1.6rem; padding-top: 1.2rem;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .card-footer span {
+      font-size: 0.6rem; color: var(--text-dim);
+      letter-spacing: 0.06em;
+    }
+    .card-footer a {
+      font-size: 0.6rem; color: var(--text-dim);
+      text-decoration: none; letter-spacing: 0.06em;
+    }
+    .card-footer a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+<div class="card">
+
+  <div class="admin-header">
+    <div class="admin-icon">⚙</div>
+    <div class="admin-wordmark">Secure<span>Doc</span> Admin</div>
+  </div>
+
+  <h1>Admin Access</h1>
+  <p class="sub">Restricted — authorised personnel only</p>
+
+  {% if error %}
+  <div class="error">⚠&nbsp;&nbsp;{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/admin/login">
+    <label for="password">Admin Passphrase</label>
+    <input type="password" id="password" name="password"
+           placeholder="••••••••••••••••"
+           autocomplete="current-password" required/>
+    <button type="submit">Authenticate</button>
+  </form>
+
+  <div class="card-footer">
+    <span>SecureDoc v1.0</span>
+    <a href="/login">← User Login</a>
+  </div>
+
+</div>
+</body>
+</html>
