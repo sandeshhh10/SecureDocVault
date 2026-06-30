@@ -16,10 +16,14 @@ import sys
 import tempfile
 import json
 import secrets
+import uuid
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 # Add tools directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(ROOT_DIR, 'tools'))
 
 from crypto_engine import (
     xor_encrypt, xor_decrypt,
@@ -260,12 +264,30 @@ class TestFlaskRoutes(unittest.TestCase):
         """Set up Flask test client."""
         # Import app here to avoid issues if dependencies aren't loaded
         try:
-            from app import app
-            self.app = app
-            self.client = app.test_client()
+            import app as app_module
+            self.app_module = app_module
+            self.app = app_module.app
+            self.client = self.app.test_client()
             self.app.config['TESTING'] = True
         except ImportError:
             self.skipTest("Flask app not importable")
+
+    def _set_honey_session(self, user_id, honey_pw='HoneyPw!23'):
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = user_id
+            sess['username'] = 'tester'
+            sess['vault_mode'] = 'decoy'
+            sess['honey_pw'] = honey_pw
+            sess['phantom_hidden'] = []
+            sess['phantom_uploaded'] = []
+
+    def _make_decoy_file(self, user_id, filename, plaintext, honey_pw, salt):
+        vault_dir = os.path.join(self.app_module.BASE_DIR, 'vault', 'decoy', user_id)
+        os.makedirs(vault_dir, exist_ok=True)
+        file_path = os.path.join(vault_dir, filename)
+        with open(file_path, 'wb') as f:
+            f.write(xor_encrypt(plaintext, honey_pw, salt))
+        return vault_dir, file_path
 
     def test_login_page_loads(self):
         """GET /login should render login form."""
@@ -288,6 +310,140 @@ class TestFlaskRoutes(unittest.TestCase):
             response = self.client.post('/logout')
             # Should redirect
             self.assertIn(response.status_code, [301, 302, 307, 308])
+
+    def test_honey_download_returns_decrypted_decoy_file(self):
+        """GET /download/<filename> should decrypt and return the decoy file."""
+        user_id = uuid.uuid4().hex
+        filename = 'example.txt'
+        honey_pw = 'HoneyPw!23'
+        salt = os.urandom(32)
+        plaintext = b'example decoy content'
+        vault_dir, file_path = self._make_decoy_file(user_id, filename, plaintext, honey_pw, salt)
+
+        try:
+            with patch('app.get_user_salts', return_value={'honeyset_salt': salt}), \
+                 patch('app.check_and_heal', return_value=None):
+                self._set_honey_session(user_id, honey_pw)
+                response = self.client.get(f'/download/{filename}')
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data, plaintext)
+            self.assertIn('attachment', response.headers.get('Content-Disposition', '').lower())
+            self.assertIn(filename, response.headers.get('Content-Disposition', ''))
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            if os.path.isdir(vault_dir):
+                try:
+                    os.rmdir(vault_dir)
+                except OSError:
+                    pass
+
+    def test_honey_delete_hides_file_without_removing_it(self):
+        """Honey delete should hide the file from the dashboard but keep it on disk."""
+        user_id = uuid.uuid4().hex
+        filename = 'hidden.txt'
+        honey_pw = 'HoneyPw!23'
+        salt = os.urandom(32)
+        vault_dir, file_path = self._make_decoy_file(user_id, filename, b'hidden content', honey_pw, salt)
+
+        try:
+            with patch('app.get_user_salts', return_value={'honeyset_salt': salt}), \
+                 patch('app.check_and_heal', return_value=None):
+                self._set_honey_session(user_id, honey_pw)
+                response = self.client.post(f'/delete/{filename}', follow_redirects=True)
+
+            self.assertTrue(os.path.exists(file_path))
+            self.assertEqual(response.status_code, 200)
+
+            with self.client.session_transaction() as sess:
+                self.assertIn(filename, sess.get('phantom_hidden', []))
+
+            dashboard = self.client.get('/dashboard')
+            self.assertEqual(dashboard.status_code, 200)
+            self.assertNotIn(filename, dashboard.get_data(as_text=True))
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            if os.path.isdir(vault_dir):
+                try:
+                    os.rmdir(vault_dir)
+                except OSError:
+                    pass
+
+    def test_honey_upload_discards_stream_and_lists_phantom_file(self):
+        """Honey upload should not write to disk but should appear in the dashboard."""
+        user_id = uuid.uuid4().hex
+        filename = 'uploaded.txt'
+        honey_pw = 'HoneyPw!23'
+        salt = os.urandom(32)
+        vault_dir = os.path.join(self.app_module.BASE_DIR, 'vault', 'decoy', user_id)
+        os.makedirs(vault_dir, exist_ok=True)
+        file_path = os.path.join(vault_dir, filename)
+
+        try:
+            with patch('app.get_user_salts', return_value={'honeyset_salt': salt}), \
+                 patch('app.check_and_heal', return_value=None):
+                self._set_honey_session(user_id, honey_pw)
+                response = self.client.post(
+                    '/upload',
+                    data={'file': (BytesIO(b'uploaded phantom content'), filename)},
+                    content_type='multipart/form-data',
+                    follow_redirects=True,
+                )
+
+            self.assertFalse(os.path.exists(file_path))
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(filename, response.get_data(as_text=True))
+
+            with self.client.session_transaction() as sess:
+                phantom_uploaded = sess.get('phantom_uploaded', [])
+                self.assertEqual(len(phantom_uploaded), 1)
+                self.assertEqual(phantom_uploaded[0]['filename'], filename)
+                self.assertGreater(phantom_uploaded[0]['size'], 0)
+        finally:
+            if os.path.isdir(vault_dir):
+                try:
+                    os.rmdir(vault_dir)
+                except OSError:
+                    pass
+
+    def test_logout_and_relogin_reset_phantom_state(self):
+        """Logout should clear phantom state so a fresh honey session starts clean."""
+        user_id = uuid.uuid4().hex
+        filename = 'reset.txt'
+        honey_pw = 'HoneyPw!23'
+        salt = os.urandom(32)
+        vault_dir, file_path = self._make_decoy_file(user_id, filename, b'reset content', honey_pw, salt)
+
+        try:
+            with patch('app.get_user_salts', return_value={'honeyset_salt': salt}), \
+                 patch('app.check_and_heal', return_value=None):
+                self._set_honey_session(user_id, honey_pw)
+
+                with self.client.session_transaction() as sess:
+                    sess['phantom_hidden'] = [filename]
+                    sess['phantom_uploaded'] = [{'filename': 'old.txt', 'size': 3, 'uploaded_at': '2026-06-30T00:00:00+00:00'}]
+
+                self.client.post('/logout')
+
+                self._set_honey_session(user_id, honey_pw)
+                response = self.client.get('/dashboard')
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(filename, response.get_data(as_text=True))
+
+            with self.client.session_transaction() as sess:
+                self.assertEqual(sess.get('phantom_hidden', []), [])
+                self.assertEqual(sess.get('phantom_uploaded', []), [])
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            if os.path.isdir(vault_dir):
+                try:
+                    os.rmdir(vault_dir)
+                except OSError:
+                    pass
 
 
 # =============================================================================

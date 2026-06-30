@@ -24,9 +24,10 @@ import sys
 import json
 import uuid
 import secrets
+from io import BytesIO
 from datetime import datetime, timezone
 from flask import (Flask, render_template, request, redirect,
-                   url_for, session, flash, jsonify)
+                   url_for, session, flash, jsonify, send_file)
 from werkzeug.utils import secure_filename
 
 # ── Local imports ──────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
 from vault_watchdog import check_and_heal
+from crypto_engine  import xor_decrypt
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -119,6 +121,28 @@ def _vault_files(vault_dir: str, user_id: str) -> list[dict]:
     return files
 
 
+def _format_display_size(size: int) -> str:
+    return f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
+
+
+def _phantom_uploaded_files() -> list[dict]:
+    files = []
+    for item in session.get('phantom_uploaded', []):
+        uploaded_at = item.get('uploaded_at', '')
+        try:
+            modified = datetime.fromisoformat(uploaded_at).strftime('%d %b %Y')
+        except ValueError:
+            modified = datetime.now(timezone.utc).strftime('%d %b %Y')
+
+        files.append({
+            'name': item.get('filename', 'unknown'),
+            'size': _format_display_size(int(item.get('size', 0))),
+            'modified': modified,
+        })
+
+    return files
+
+
 def _client_ip() -> str:
     return request.headers.get('X-Forwarded-For', request.remote_addr or '0.0.0.0')
 
@@ -189,6 +213,8 @@ def login():
         session['vault_mode'] = 'decoy'          # never sent to client
         session['honey_pw']   = password         # needed by watchdog for XOR re-keying
         session['high_alert'] = high_alert       # Rule 4.2 flag for watchdog
+        session['phantom_hidden'] = []
+        session['phantom_uploaded'] = []
         return redirect(url_for('dashboard'))
 
     # ── FAILED LOGIN ────────────────────────────────────────────────────────
@@ -250,6 +276,11 @@ def dashboard():
     # Select vault — identical code path, only the vault_type differs
     vault_type = 'real' if vault_mode == 'real' else 'decoy'
     files      = db_backend.list_documents(user_id, vault_type)
+
+    if vault_mode == 'decoy':
+        hidden = set(session.get('phantom_hidden', []))
+        files = [f for f in files if f['name'] not in hidden]
+        files.extend(_phantom_uploaded_files())
 
     # Render identical template regardless of vault_mode
     return render_template('dashboard.html', username=username, files=files)
@@ -314,8 +345,17 @@ def upload():
             'sanitised_filename': safe_name,
             'declared_content_type': file.content_type or 'unknown',
             'bytes_received': total_bytes,
-            'action': 'DISCARDED — file stream drained, nothing written to disk',
+            'action': 'DISCARDED',
         })
+
+        phantom_uploaded = session.get('phantom_uploaded', [])
+        phantom_uploaded.append({
+            'filename': safe_name,
+            'size': total_bytes,
+            'uploaded_at': datetime.now(timezone.utc).isoformat(),
+        })
+        session['phantom_uploaded'] = phantom_uploaded
+        session.modified = True
 
         # Return identical success experience
         flash(f'"{safe_name}" uploaded successfully.', 'success')
@@ -392,6 +432,12 @@ def delete(filename: str):
 
     # ── HONEY SESSION — Phantom Delete ─────────────────────────────────────
     if vault_mode == 'decoy':
+        phantom_hidden = session.get('phantom_hidden', [])
+        if safe_name not in phantom_hidden:
+            phantom_hidden.append(safe_name)
+        session['phantom_hidden'] = phantom_hidden
+        session.modified = True
+
         _phantom_log('PHANTOM_DELETE', {
             'requested_filename': filename,
             'sanitised_filename': safe_name,
@@ -417,6 +463,59 @@ def delete(filename: str):
 
     flash(f'"{safe_name}" deleted successfully.', 'success')
     return redirect(url_for('dashboard'))
+
+
+@app.route('/download/<path:filename>', methods=['GET'])
+def download(filename: str):
+    """
+    Serves a file from the active vault.
+
+    REAL SESSION:
+      - Resolves the requested file inside vault/real/<user_id>/.
+      - Streams the file back as an attachment.
+
+    HONEY SESSION:
+      - Resolves the requested file inside vault/decoy/<user_id>/.
+      - Logs the access as a phantom download while returning the decoy file.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    vault_mode = session.get('vault_mode', 'real')
+    user_id    = session['user_id']
+    safe_name  = secure_filename(filename)
+
+    if not safe_name:
+        flash('Invalid filename.', 'error')
+        return redirect(url_for('dashboard'))
+
+    vault_root = REAL_VAULT if vault_mode == 'real' else DECOY_VAULT
+    target     = _safe_vault_path(vault_root, user_id, safe_name)
+
+    if target is None or not os.path.isfile(target):
+        flash(f'"{safe_name}" not found in your vault.', 'error')
+        return redirect(url_for('dashboard'))
+
+    if vault_mode == 'decoy':
+        salts = get_user_salts(user_id)
+        if not salts:
+            flash('Unable to access file.', 'error')
+            return redirect(url_for('dashboard'))
+
+        with open(target, 'rb') as f:
+            ciphertext = f.read()
+
+        plaintext = xor_decrypt(ciphertext, session.get('honey_pw', ''), salts['honeyset_salt'])
+        _phantom_log('PHANTOM_DOWNLOAD', {
+            'requested_filename': filename,
+            'sanitised_filename': safe_name,
+            'size': len(plaintext),
+            'action': 'DECRYPTED and returned to caller',
+        })
+
+        return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
+
+    return send_file(target, as_attachment=True, download_name=safe_name)
 
 
 @app.route('/logout', methods=['POST'])
