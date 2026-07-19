@@ -2,13 +2,20 @@
 # Install with: pip install -r requirements.txt
 
 flask>=3.0.0
-pycryptodome>=3.20.0
 reportlab>=4.0.0
+
+# Supabase backend (OPTIONAL) — only needed when SUPABASE_DB_URL is set.
+# Talks to Supabase Postgres directly with a lightweight DB driver (no SDK).
+# Without SUPABASE_DB_URL the app falls back to local SQLite + vault/ folders.
+psycopg[binary]>=3.1
 
 # Testing dependencies (optional)
 pytest>=7.0.0
 pytest-cov>=4.0.0
 coverage>=7.0.0
+
+# AES-256 is implemented from scratch in tools/aes256.py (FIPS-197) —
+# no pycryptodome / cryptography dependency for the real-vault cipher.
 
 # Standard library modules used (no install needed):
 #   hashlib, os, json, sqlite3, uuid, secrets, hmac,

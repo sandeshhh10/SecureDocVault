@@ -30,16 +30,20 @@ Behavioral Invariants:
 import hashlib
 import os
 import secrets
-import sqlite3
 import uuid
 from collections import namedtuple
 from typing import Optional
+
+import db_backend
+from db_backend import PH
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 _BASE_DIR = os.path.join(os.path.dirname(__file__), '..')
-DB_PATH   = os.path.abspath(os.path.join(_BASE_DIR, 'secure_doc.db'))
+# Kept for reference; the active connection is chosen by db_backend
+# (SQLite locally, or Supabase Postgres when SUPABASE_DB_URL is set).
+DB_PATH   = db_backend.SQLITE_PATH
 
 # ---------------------------------------------------------------------------
 # Config
@@ -117,11 +121,10 @@ def register_user(username: str, real_password: str) -> dict:
     Returns dict with user_id, vault_path, honeyset_salt (hex), vault_salt (hex).
     Raises ValueError if username already exists.
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys=ON;")
+    conn = db_backend.connect()
 
     # Guard: unique username
-    row = conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
+    row = conn.execute(f"SELECT 1 FROM users WHERE username={PH}", (username,)).fetchone()
     if row:
         conn.close()
         raise ValueError(f"Username '{username}' is already registered.")
@@ -148,23 +151,24 @@ def register_user(username: str, real_password: str) -> dict:
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        with conn:
+        conn.execute(
+            f"INSERT INTO users VALUES ({','.join([PH]*7)})",
+            (user_id, username, now, 0, vault_path,
+             honeyset_salt.hex(), vault_salt.hex())
+        )
+        for pos, pw_hash in enumerate(shuffled):
+            set_id = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO users VALUES (?,?,?,?,?,?,?)",
-                (user_id, username, now, 0, vault_path,
-                 honeyset_salt.hex(), vault_salt.hex())
+                f"INSERT INTO honeysets VALUES ({','.join([PH]*4)})",
+                (set_id, user_id, pos, pw_hash)
             )
-            for pos, pw_hash in enumerate(shuffled):
-                set_id = str(uuid.uuid4())
-                conn.execute(
-                    "INSERT INTO honeysets VALUES (?,?,?,?)",
-                    (set_id, user_id, pos, pw_hash)
-                )
-            conn.execute(
-                "INSERT INTO real_index VALUES (?,?)",
-                (user_id, real_shuffled_idx)
-            )
-    except sqlite3.IntegrityError as e:
+        conn.execute(
+            f"INSERT INTO real_index VALUES ({PH},{PH})",
+            (user_id, real_shuffled_idx)
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
         conn.close()
         raise ValueError(f"DB integrity error during registration: {e}")
 
@@ -197,11 +201,10 @@ def check_login(username: str, password_attempt: str) -> LoginResult:
       LoginResult('HONEY', user_id, match_index) — honeyword matched
       LoginResult('FAILED', None, None)           — no match in set
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys=ON;")
+    conn = db_backend.connect()
 
     row = conn.execute(
-        "SELECT user_id, honeyset_salt FROM users WHERE username=?",
+        f"SELECT user_id, honeyset_salt FROM users WHERE username={PH}",
         (username,)
     ).fetchone()
 
@@ -214,12 +217,12 @@ def check_login(username: str, password_attempt: str) -> LoginResult:
 
     # Fetch all 20 hashes ordered by position
     hash_rows = conn.execute(
-        "SELECT hash_index, pw_hash FROM honeysets WHERE user_id=? ORDER BY hash_index",
+        f"SELECT hash_index, pw_hash FROM honeysets WHERE user_id={PH} ORDER BY hash_index",
         (user_id,)
     ).fetchall()
 
     real_idx_row = conn.execute(
-        "SELECT real_idx FROM real_index WHERE user_id=?",
+        f"SELECT real_idx FROM real_index WHERE user_id={PH}",
         (user_id,)
     ).fetchone()
 
@@ -254,9 +257,9 @@ def get_user_salts(user_id: str) -> Optional[dict]:
     Returns {'honeyset_salt': bytes, 'vault_salt': bytes} for a user_id.
     Returns None if user not found.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_backend.connect()
     row  = conn.execute(
-        "SELECT honeyset_salt, vault_salt FROM users WHERE user_id=?",
+        f"SELECT honeyset_salt, vault_salt FROM users WHERE user_id={PH}",
         (user_id,)
     ).fetchone()
     conn.close()

@@ -42,7 +42,7 @@ if sys.version_info < (3, 10):
 _ok(f'Python {sys.version_info.major}.{sys.version_info.minor}')
 
 # 2. Dependencies
-_deps = {'flask': 'Flask', 'Crypto': 'pycryptodome', 'reportlab': 'reportlab'}
+_deps = {'flask': 'Flask', 'reportlab': 'reportlab'}
 for mod, pkg in _deps.items():
     try:
         __import__(mod)
@@ -69,39 +69,22 @@ else:
 
 # 5. Database
 _hdr('Database Initialisation')
-DB_PATH = os.path.join(BASE_DIR, 'secure_doc.db')
-SCHEMA  = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id       TEXT PRIMARY KEY,
-    username      TEXT UNIQUE NOT NULL,
-    created_at    TEXT NOT NULL,
-    is_locked     INTEGER NOT NULL DEFAULT 0,
-    vault_path    TEXT NOT NULL,
-    honeyset_salt TEXT NOT NULL DEFAULT '',
-    vault_salt    TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS honeysets (
-    set_id      TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL REFERENCES users(user_id),
-    hash_index  INTEGER NOT NULL,
-    pw_hash     TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS real_index (
-    user_id  TEXT PRIMARY KEY REFERENCES users(user_id),
-    real_idx INTEGER NOT NULL
-);
-"""
 try:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.executescript(SCHEMA)
-    conn.commit()
-    tables = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()]
-    conn.close()
-    _ok(f'secure_doc.db — tables: {", ".join(tables)}')
+    import db_backend
+except Exception as e:
+    _err(f'Could not load storage backend: {e}')
+
+if db_backend.USE_POSTGRES:
+    try:
+        import psycopg  # noqa: F401
+    except ImportError:
+        _err('SUPABASE_DB_URL is set but psycopg is not installed — '
+             'run: pip install "psycopg[binary]"')
+
+_ok(f'Storage backend: {db_backend.backend_name()}')
+try:
+    tables = db_backend.init_schema()
+    _ok(f'Schema ready — tables: {", ".join(tables)}')
 except Exception as e:
     _err(f'Database init failed: {e}')
 
@@ -122,8 +105,8 @@ try:
     _pt   = b'self-test payload'
     assert aes_decrypt(aes_encrypt(_pt, 'pw', _salt), 'pw', _salt) == _pt
     assert xor_decrypt(xor_encrypt(_pt, 'pw', _salt), 'pw', _salt) == _pt
-    _ok('AES-256-GCM round-trip: PASS')
-    _ok('XOR round-trip:         PASS')
+    _ok('AES-256-CBC + HMAC-SHA256 round-trip: PASS')
+    _ok('XOR round-trip:                       PASS')
 except Exception as e:
     _err(f'Crypto self-test failed: {e}')
 

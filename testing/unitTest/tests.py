@@ -107,10 +107,10 @@ class TestCryptoEngine(unittest.TestCase):
         self.assertEqual(self.plaintext, decrypted)
 
     def test_aes_ciphertext_includes_nonce_and_tag(self):
-        """AES ciphertext should include 16-byte nonce and 16-byte tag."""
+        """AES ciphertext should include 16-byte IV and 32-byte HMAC tag."""
         ciphertext = aes_encrypt(self.plaintext, self.password, self.salt)
-        # Format: [16-byte nonce][variable ciphertext][16-byte tag]
-        self.assertGreaterEqual(len(ciphertext), 16 + len(self.plaintext) + 16)
+        # Format: [16-byte IV][CBC ciphertext, PKCS7-padded][32-byte HMAC-SHA256 tag]
+        self.assertGreaterEqual(len(ciphertext), 16 + len(self.plaintext) + 32)
 
     def test_aes_different_encryptions_different_ciphertext(self):
         """Two AES encryptions should produce different ciphertexts (random nonce)."""
@@ -119,13 +119,13 @@ class TestCryptoEngine(unittest.TestCase):
         self.assertNotEqual(cipher1, cipher2)
 
     def test_aes_wrong_password_fails(self):
-        """Decryption with wrong password should fail (GCM auth)."""
+        """Decryption with wrong password should fail (HMAC auth)."""
         ciphertext = aes_encrypt(self.plaintext, self.password, self.salt)
         with self.assertRaises(ValueError):
             aes_decrypt(ciphertext, "wrongpassword", self.salt)
 
     def test_aes_tampered_ciphertext_fails(self):
-        """Tampering with ciphertext should be detected (GCM auth)."""
+        """Tampering with ciphertext should be detected (HMAC auth)."""
         ciphertext = aes_encrypt(self.plaintext, self.password, self.salt)
         tampered = bytearray(ciphertext)
         # Flip a bit in the middle
@@ -141,8 +141,15 @@ class TestCryptoEngine(unittest.TestCase):
         self.assertEqual(plaintext, decrypted)
 
     def test_aes_large_plaintext(self):
-        """AES should handle large plaintext (10 MB)."""
-        large_plaintext = os.urandom(10 * 1024 * 1024)
+        """AES should handle larger plaintext (256 KB).
+
+        Sized down from 10 MB: AES is now a hand-rolled, pure-Python
+        block cipher (tools/aes256.py) instead of a hardware-accelerated
+        C library, so throughput is orders of magnitude lower. 256 KB is
+        still enough to exercise many CBC blocks without making the
+        suite slow.
+        """
+        large_plaintext = os.urandom(256 * 1024)
         ciphertext = aes_encrypt(large_plaintext, self.password, self.salt)
         decrypted = aes_decrypt(ciphertext, self.password, self.salt)
         self.assertEqual(large_plaintext, decrypted)
