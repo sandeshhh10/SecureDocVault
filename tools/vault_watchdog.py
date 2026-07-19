@@ -35,6 +35,7 @@ _TOOLS = os.path.dirname(__file__)
 _BASE  = os.path.join(_TOOLS, '..')
 sys.path.insert(0, _TOOLS)
 
+import db_backend
 from crypto_engine import xor_encrypt
 from enron_loader  import generate_decoy_document
 from audit_logger  import LOG_PATH
@@ -67,20 +68,13 @@ def check_and_heal(
     Returns:
         True if a heal was performed, False if vault was healthy.
     """
-    vault_dir = os.path.join(DECOY_VAULT, user_id)
+    # Count existing decoy documents via the active backend
+    existing_count = db_backend.count_documents(user_id, 'decoy')
 
-    # Count existing non-hidden files
-    existing = []
-    if os.path.isdir(vault_dir):
-        existing = [f for f in os.listdir(vault_dir)
-                    if not f.startswith('.') and
-                    os.path.isfile(os.path.join(vault_dir, f))]
-
-    if len(existing) >= MIN_FILES:
+    if existing_count >= MIN_FILES:
         return False   # vault is healthy — nothing to do
 
     # ── Heal ──────────────────────────────────────────────────────────────
-    os.makedirs(vault_dir, exist_ok=True)
     n = HIGH_ALERT_N if high_value else STANDARD_N
 
     written = []
@@ -88,20 +82,17 @@ def check_and_heal(
         fmt = 'pdf' if high_value else 'random'
         fname, plaintext = generate_decoy_document(fmt=fmt)
 
-        # Avoid filename collisions with existing files
-        dest = os.path.join(vault_dir, fname)
-        if os.path.exists(dest):
+        # Avoid filename collisions with existing decoy docs
+        if db_backend.document_exists(user_id, 'decoy', fname):
             base, ext = os.path.splitext(fname)
             fname = f"{base}_{uuid.uuid4().hex[:4]}{ext}"
-            dest  = os.path.join(vault_dir, fname)
 
         encrypted = xor_encrypt(plaintext, password, honeyset_salt)
-        with open(dest, 'wb') as f:
-            f.write(encrypted)
+        db_backend.put_document(user_id, 'decoy', fname, encrypted)
         written.append(fname)
 
     # ── Log the heal event (append to intrusion_audit.log) ────────────────
-    _log_heal_event(user_id, len(existing), written, high_value)
+    _log_heal_event(user_id, existing_count, written, high_value)
 
     return True
 

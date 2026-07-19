@@ -31,6 +31,7 @@ from werkzeug.utils import secure_filename
 
 # ── Local imports ──────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
+import db_backend
 from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
@@ -161,8 +162,7 @@ def login():
         salts = get_user_salts(result.user_id)
 
         # Populate decoy vault if empty (or on every high-alert login for freshness)
-        decoy_dir = os.path.join(DECOY_VAULT, result.user_id)
-        vault_is_empty = not os.path.isdir(decoy_dir) or len(os.listdir(decoy_dir)) == 0
+        vault_is_empty = db_backend.count_documents(result.user_id, 'decoy') == 0
         if vault_is_empty or high_alert:
             if salts:
                 populate_decoy_vault(
@@ -247,9 +247,9 @@ def dashboard():
                 high_value    = high_alert
             )
 
-    # Select vault — identical code path, only the directory differs
-    vault_root = REAL_VAULT if vault_mode == 'real' else DECOY_VAULT
-    files      = _vault_files(vault_root, user_id)
+    # Select vault — identical code path, only the vault_type differs
+    vault_type = 'real' if vault_mode == 'real' else 'decoy'
+    files      = db_backend.list_documents(user_id, vault_type)
 
     # Render identical template regardless of vault_mode
     return render_template('dashboard.html', username=username, files=files)
@@ -334,39 +334,28 @@ def upload():
         flash(f'File type not permitted. Allowed: {", ".join(sorted(ALLOWED_EXTENSIONS))}', 'error')
         return redirect(url_for('dashboard'))
 
-    # 3. Directory traversal guard
-    dest_path = _safe_vault_path(REAL_VAULT, user_id, safe_name)
-    if dest_path is None:
-        flash('Invalid file path.', 'error')
+    # 3. Read the upload into memory, enforcing the size limit as we go
+    buffer = bytearray()
+    while True:
+        chunk = file.stream.read(65_536)
+        if not chunk:
+            break
+        buffer += chunk
+        if len(buffer) > MAX_UPLOAD_BYTES:
+            flash(f'File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.', 'error')
+            return redirect(url_for('dashboard'))
+
+    # 4. Persist via the document backend (Supabase Postgres, or the local
+    #    vault when Supabase is not configured). Directory-traversal is guarded
+    #    inside db_backend.put_document for the filesystem path.
+    try:
+        stored = db_backend.put_document(user_id, 'real', safe_name, bytes(buffer))
+    except Exception:
+        flash('Upload failed due to a server error.', 'error')
         return redirect(url_for('dashboard'))
 
-    # 4. Size limit — read stream, enforce limit before writing
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    total_bytes = 0
-    tmp_path    = dest_path + '.tmp'
-
-    try:
-        with open(tmp_path, 'wb') as out:
-            while True:
-                chunk = file.stream.read(65_536)
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > MAX_UPLOAD_BYTES:
-                    # Exceeded limit — clean up and reject
-                    out.close()
-                    os.remove(tmp_path)
-                    flash(f'File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.', 'error')
-                    return redirect(url_for('dashboard'))
-                out.write(chunk)
-
-        # Atomic rename: only appears in vault once fully written
-        os.replace(tmp_path, dest_path)
-
-    except OSError as e:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        flash('Upload failed due to a server error.', 'error')
+    if not stored:
+        flash('Invalid file path.', 'error')
         return redirect(url_for('dashboard'))
 
     flash(f'"{safe_name}" uploaded successfully.', 'success')
@@ -414,23 +403,16 @@ def delete(filename: str):
         return redirect(url_for('dashboard'))
 
     # ── REAL SESSION — Genuine Delete ───────────────────────────────────────
-
-    # 1. Directory traversal guard
-    target = _safe_vault_path(REAL_VAULT, user_id, safe_name)
-    if target is None:
-        flash('Invalid file path.', 'error')
-        return redirect(url_for('dashboard'))
-
-    # 2. Confirm the file actually exists in the vault
-    if not os.path.isfile(target):
-        flash(f'"{safe_name}" not found in your vault.', 'error')
-        return redirect(url_for('dashboard'))
-
-    # 3. Delete
+    # Directory traversal is guarded inside db_backend for the filesystem path;
+    # the Postgres path deletes by (user_id, vault_type, filename).
     try:
-        os.remove(target)
-    except OSError:
+        deleted = db_backend.delete_document(user_id, 'real', safe_name)
+    except Exception:
         flash('Delete failed due to a server error.', 'error')
+        return redirect(url_for('dashboard'))
+
+    if not deleted:
+        flash(f'"{safe_name}" not found in your vault.', 'error')
         return redirect(url_for('dashboard'))
 
     flash(f'"{safe_name}" deleted successfully.', 'success')

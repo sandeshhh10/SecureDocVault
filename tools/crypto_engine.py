@@ -12,28 +12,34 @@ Provides two cipher modes under a single unified KDF:
 
   AES_encrypt / AES_decrypt
     → Real Vault  (vault/real/)
-    → Cipher: AES-256-GCM (pycryptodome)
-    → Key: PBKDF2-HMAC-SHA256(password, vault_salt, 200_000)
-    → Nonce: 16-byte random, prepended to ciphertext
-    → Tag:   16-byte GCM auth tag, appended after ciphertext
+    → Cipher: AES-256-CBC, hand-implemented from FIPS-197 (see aes256.py) —
+      no third-party crypto library. Authenticated Encrypt-then-MAC with
+      HMAC-SHA256 (stdlib hmac) stands in for AES-GCM's built-in tag.
+    → Keys: PBKDF2-HMAC-SHA256(password, vault_salt, 200_000, dklen=64),
+      split into a 32-byte AES key and a distinct 32-byte HMAC key.
+    → IV:  16-byte random, prepended to ciphertext.
+    → Tag: 32-byte HMAC-SHA256 over (iv || ciphertext), appended.
 
 Wire format for AES ciphertext on disk:
-  [ 16-byte nonce ][ variable-length ciphertext ][ 16-byte GCM tag ]
+  [ 16-byte IV ][ variable-length CBC ciphertext ][ 32-byte HMAC tag ]
 
-No external deps beyond pycryptodome + stdlib.
+No external deps beyond the Python standard library (hashlib, hmac, os)
+plus this project's own aes256.py — no pycryptodome / cryptography.
 """
 
 import os
+import hmac
 import hashlib
-from Crypto.Cipher import AES
+from aes256 import cbc_encrypt, cbc_decrypt
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-PBKDF2_ITERATIONS = 200_000
-PBKDF2_DKLEN      = 32          # 256-bit key for both XOR and AES-256
-AES_NONCE_SIZE    = 16          # bytes
-AES_TAG_SIZE      = 16          # bytes
+PBKDF2_ITERATIONS  = 200_000
+PBKDF2_DKLEN       = 32          # 256-bit key for XOR
+AES_KDF_DKLEN      = 64          # AES key (32B) + HMAC key (32B)
+AES_IV_SIZE        = 16          # bytes
+HMAC_TAG_SIZE      = 32          # bytes (SHA-256 digest)
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +47,7 @@ AES_TAG_SIZE      = 16          # bytes
 # ---------------------------------------------------------------------------
 def _derive_key(password: str, salt: bytes) -> bytes:
     """
-    Unified key derivation for both cipher modes.
+    Key derivation used by the XOR honey-vault path.
     Returns a 256-bit key via PBKDF2-HMAC-SHA256.
     """
     return hashlib.pbkdf2_hmac(
@@ -51,6 +57,24 @@ def _derive_key(password: str, salt: bytes) -> bytes:
         PBKDF2_ITERATIONS,
         dklen=PBKDF2_DKLEN
     )
+
+
+def _derive_aes_keys(password: str, salt: bytes):
+    """
+    Derives independent AES-encryption and HMAC-authentication keys from
+    a single PBKDF2 call (Encrypt-then-MAC requires the two keys to be
+    cryptographically separate).
+
+    Returns (aes_key: 32 bytes, mac_key: 32 bytes).
+    """
+    material = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt,
+        PBKDF2_ITERATIONS,
+        dklen=AES_KDF_DKLEN
+    )
+    return material[:32], material[32:]
 
 
 # ---------------------------------------------------------------------------
@@ -84,13 +108,14 @@ def xor_decrypt(ciphertext: bytes, password: str, salt: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# AES-256-GCM Cipher — Real Vault
+# AES-256-CBC + HMAC-SHA256 Cipher (Encrypt-then-MAC) — Real Vault
 # ---------------------------------------------------------------------------
 def aes_encrypt(plaintext: bytes, password: str, salt: bytes) -> bytes:
     """
-    Encrypts plaintext for the real vault using AES-256-GCM.
+    Encrypts plaintext for the real vault using hand-implemented AES-256-CBC,
+    then authenticates it with HMAC-SHA256 (Encrypt-then-MAC).
 
-    Wire format: [ 16-byte nonce || ciphertext || 16-byte GCM tag ]
+    Wire format: [ 16-byte IV || CBC ciphertext || 32-byte HMAC tag ]
 
     Args:
         plaintext : raw file bytes
@@ -100,40 +125,38 @@ def aes_encrypt(plaintext: bytes, password: str, salt: bytes) -> bytes:
     Returns:
         Authenticated ciphertext blob
     """
-    key    = _derive_key(password, salt)
-    nonce  = os.urandom(AES_NONCE_SIZE)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-    return nonce + ciphertext + tag
+    aes_key, mac_key = _derive_aes_keys(password, salt)
+    iv_and_ciphertext = cbc_encrypt(plaintext, aes_key)
+    tag = hmac.new(mac_key, iv_and_ciphertext, hashlib.sha256).digest()
+    return iv_and_ciphertext + tag
 
 
 def aes_decrypt(blob: bytes, password: str, salt: bytes) -> bytes:
     """
-    Decrypts and authenticates an AES-256-GCM blob.
+    Verifies and decrypts an AES-256-CBC + HMAC-SHA256 blob.
 
     Raises ValueError on authentication failure (tampered ciphertext or wrong key).
 
     Args:
-        blob     : nonce || ciphertext || tag (as returned by aes_encrypt)
+        blob     : iv || ciphertext || tag (as returned by aes_encrypt)
         password : the user's real password
         salt     : same vault salt used during encryption
 
     Returns:
         Verified plaintext bytes
     """
-    if len(blob) < AES_NONCE_SIZE + AES_TAG_SIZE:
-        raise ValueError("Ciphertext blob is too short to contain nonce + tag.")
+    if len(blob) < AES_IV_SIZE + HMAC_TAG_SIZE:
+        raise ValueError("Ciphertext blob is too short to contain IV + tag.")
 
-    nonce      = blob[:AES_NONCE_SIZE]
-    tag        = blob[-AES_TAG_SIZE:]
-    ciphertext = blob[AES_NONCE_SIZE:-AES_TAG_SIZE]
+    iv_and_ciphertext = blob[:-HMAC_TAG_SIZE]
+    tag               = blob[-HMAC_TAG_SIZE:]
 
-    key    = _derive_key(password, salt)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    try:
-        return cipher.decrypt_and_verify(ciphertext, tag)
-    except ValueError:
-        raise ValueError("AES-GCM authentication failed — ciphertext may be tampered or password is incorrect.")
+    aes_key, mac_key = _derive_aes_keys(password, salt)
+    expected_tag = hmac.new(mac_key, iv_and_ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_tag, tag):
+        raise ValueError("HMAC authentication failed — ciphertext may be tampered or password is incorrect.")
+
+    return cbc_decrypt(iv_and_ciphertext, aes_key)
 
 
 # ---------------------------------------------------------------------------

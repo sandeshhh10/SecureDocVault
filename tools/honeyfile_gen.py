@@ -271,9 +271,7 @@ def populate_decoy_vault(
     import sys
     sys.path.insert(0, os.path.dirname(__file__))
     from crypto_engine import xor_encrypt
-
-    vault_dir = os.path.join(DECOY_VAULT, user_id)
-    os.makedirs(vault_dir, exist_ok=True)
+    import db_backend
 
     count     = HIGH_VALUE_COUNT if high_value else STANDARD_COUNT
     generated: list[tuple[str, str]] = []
@@ -298,11 +296,11 @@ def populate_decoy_vault(
 
     written = []
     for fname, content in generated:
-        dest = os.path.join(vault_dir, fname)
         plaintext = content.encode('utf-8')
         encrypted = xor_encrypt(plaintext, password, honeyset_salt)
-        with open(dest, 'wb') as f:
-            f.write(encrypted)
+        # Store the XOR-encrypted decoy blob via the active backend
+        # (Supabase Postgres, or vault/decoy/<user_id>/ locally).
+        db_backend.put_document(user_id, 'decoy', fname, encrypted)
         written.append(fname)
 
     return written
