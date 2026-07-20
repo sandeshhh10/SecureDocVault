@@ -37,7 +37,7 @@ from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
 from vault_watchdog import check_and_heal
-from crypto_engine  import xor_decrypt
+from crypto_engine  import xor_decrypt, aes_decrypt, encrypt_file_to_vault
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -175,6 +175,7 @@ def login():
         session['user_id']    = result.user_id
         session['username']   = username
         session['vault_mode'] = 'real'           # never sent to client
+        session['real_pw']    = password         # needed for AES upload encryption
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
@@ -297,7 +298,7 @@ def upload():
       - Sanitises filename with werkzeug.secure_filename (strips path separators,
         null bytes, and other dangerous characters).
       - Resolves the final path with _safe_vault_path() to block directory traversal.
-      - Writes file to vault/real/<user_id>/.
+            - Encrypts the uploaded bytes with AES-256-GCM before writing to vault/real/<user_id>/.
 
     HONEY SESSION — Phantom Upload:
       - Accepts the multipart request normally (no UI difference).
@@ -362,6 +363,12 @@ def upload():
         return redirect(url_for('dashboard'))
 
     # ── REAL SESSION — Genuine Upload ───────────────────────────────────────
+
+    salts = get_user_salts(user_id)
+    real_password = session.get('real_pw', '')
+    if not salts or not real_password:
+        flash('Upload failed due to missing encryption context.', 'error')
+        return redirect(url_for('dashboard'))
 
     # 1. Sanitise filename
     safe_name = secure_filename(file.filename)
@@ -472,7 +479,7 @@ def download(filename: str):
 
     REAL SESSION:
       - Resolves the requested file inside vault/real/<user_id>/.
-      - Streams the file back as an attachment.
+            - Decrypts the AES-256-GCM blob and streams the plaintext back as an attachment.
 
     HONEY SESSION:
       - Resolves the requested file inside vault/decoy/<user_id>/.
@@ -515,7 +522,17 @@ def download(filename: str):
 
         return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
-    return send_file(target, as_attachment=True, download_name=safe_name)
+    salts = get_user_salts(user_id)
+    real_password = session.get('real_pw', '')
+    if not salts or not real_password:
+        flash('Unable to access file.', 'error')
+        return redirect(url_for('dashboard'))
+
+    with open(target, 'rb') as f:
+        ciphertext = f.read()
+
+    plaintext = aes_decrypt(ciphertext, real_password, salts['vault_salt'])
+    return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
 
 @app.route('/logout', methods=['POST'])

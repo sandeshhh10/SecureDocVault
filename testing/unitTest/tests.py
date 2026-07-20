@@ -281,6 +281,13 @@ class TestFlaskRoutes(unittest.TestCase):
             sess['phantom_hidden'] = []
             sess['phantom_uploaded'] = []
 
+    def _set_real_session(self, user_id, real_pw='RealPw!23'):
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = user_id
+            sess['username'] = 'tester'
+            sess['vault_mode'] = 'real'
+            sess['real_pw'] = real_pw
+
     def _make_decoy_file(self, user_id, filename, plaintext, honey_pw, salt):
         vault_dir = os.path.join(self.app_module.BASE_DIR, 'vault', 'decoy', user_id)
         os.makedirs(vault_dir, exist_ok=True)
@@ -402,6 +409,51 @@ class TestFlaskRoutes(unittest.TestCase):
                 self.assertEqual(phantom_uploaded[0]['filename'], filename)
                 self.assertGreater(phantom_uploaded[0]['size'], 0)
         finally:
+            if os.path.isdir(vault_dir):
+                try:
+                    os.rmdir(vault_dir)
+                except OSError:
+                    pass
+
+    def test_real_upload_encrypts_file_at_rest_and_downloads_plaintext(self):
+        """Real upload should store AES-encrypted bytes and download the original plaintext."""
+        user_id = uuid.uuid4().hex
+        filename = 'secret.txt'
+        real_pw = 'RealPw!23'
+        vault_salt = os.urandom(32)
+        plaintext = b'real file content'
+        vault_dir = os.path.join(self.app_module.BASE_DIR, 'vault', 'real', user_id)
+        os.makedirs(vault_dir, exist_ok=True)
+        file_path = os.path.join(vault_dir, filename)
+
+        try:
+            with patch('app.get_user_salts', return_value={'vault_salt': vault_salt, 'honeyset_salt': os.urandom(32)}):
+                self._set_real_session(user_id, real_pw)
+                upload_response = self.client.post(
+                    '/upload',
+                    data={'file': (BytesIO(plaintext), filename)},
+                    content_type='multipart/form-data',
+                    follow_redirects=True,
+                )
+
+            self.assertEqual(upload_response.status_code, 200)
+            self.assertTrue(os.path.exists(file_path))
+
+            with open(file_path, 'rb') as f:
+                on_disk = f.read()
+
+            self.assertNotEqual(on_disk, plaintext)
+            self.assertEqual(aes_decrypt(on_disk, real_pw, vault_salt), plaintext)
+
+            with patch('app.get_user_salts', return_value={'vault_salt': vault_salt, 'honeyset_salt': os.urandom(32)}):
+                self._set_real_session(user_id, real_pw)
+                download_response = self.client.get(f'/download/{filename}')
+
+            self.assertEqual(download_response.status_code, 200)
+            self.assertEqual(download_response.data, plaintext)
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
             if os.path.isdir(vault_dir):
                 try:
                     os.rmdir(vault_dir)
