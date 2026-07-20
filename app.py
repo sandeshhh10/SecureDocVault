@@ -24,8 +24,9 @@ import sys
 import json
 import uuid
 import secrets
+import sqlite3
 from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import (Flask, render_template, request, redirect,
                    url_for, session, flash, jsonify, send_file)
 from werkzeug.utils import secure_filename
@@ -37,19 +38,27 @@ from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
 from vault_watchdog import check_and_heal
-from crypto_engine  import xor_decrypt, aes_decrypt, encrypt_file_to_vault
+from crypto_engine  import (
+    xor_decrypt,
+    aes_decrypt_with_key,
+    aes_encrypt_with_key,
+    derive_vault_key,
+)
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECDOC_SECRET', os.urandom(32))
 
 BASE_DIR    = os.path.dirname(__file__)
+DB_PATH     = os.path.join(BASE_DIR, 'secure_doc.db')
 REAL_VAULT  = os.path.join(BASE_DIR, 'vault', 'real')
 DECOY_VAULT = os.path.join(BASE_DIR, 'vault', 'decoy')
 LOG_PATH    = os.path.join(BASE_DIR, 'logs', 'intrusion_audit.log')
 
 # Maximum file size accepted from any user (16 MB)
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+
+REAL_SESSION_TABLE = 'real_vault_sessions'
 
 # File extensions permitted in the real vault
 ALLOWED_EXTENSIONS = {
@@ -147,6 +156,90 @@ def _client_ip() -> str:
     return request.headers.get('X-Forwarded-For', request.remote_addr or '0.0.0.0')
 
 
+def _ensure_real_vault_session_table() -> None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        f'''
+        CREATE TABLE IF NOT EXISTS {REAL_SESSION_TABLE} (
+            session_token TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            vault_key     BLOB NOT NULL,
+            created_at    TEXT NOT NULL,
+            expires_at    TEXT NOT NULL
+        )
+        '''
+    )
+    conn.execute(
+        f'CREATE INDEX IF NOT EXISTS idx_{REAL_SESSION_TABLE}_user_id ON {REAL_SESSION_TABLE}(user_id)'
+    )
+    conn.commit()
+    conn.close()
+
+
+def _create_real_vault_session(user_id: str, vault_key: bytes) -> str:
+    _ensure_real_vault_session_table()
+    session_token = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=12)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        f'''
+        INSERT INTO {REAL_SESSION_TABLE} (session_token, user_id, vault_key, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (session_token, user_id, vault_key, now.isoformat(), expires_at.isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return session_token
+
+
+def _get_real_vault_key(session_token: str) -> bytes | None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        f'SELECT vault_key, expires_at FROM {REAL_SESSION_TABLE} WHERE session_token=?',
+        (session_token,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    vault_key, expires_at = row
+    if expires_at and expires_at <= datetime.now(timezone.utc).isoformat():
+        conn.execute(f'DELETE FROM {REAL_SESSION_TABLE} WHERE session_token=?', (session_token,))
+        conn.commit()
+        conn.close()
+        return None
+
+    conn.close()
+    return vault_key
+
+
+def _clear_real_vault_session(session_token: str) -> None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f'DELETE FROM {REAL_SESSION_TABLE} WHERE session_token=?', (session_token,))
+    conn.commit()
+    conn.close()
+
+
+def _active_real_vault_key() -> bytes | None:
+    session_token = session.get('session_token')
+    if not session_token:
+        return None
+    return _get_real_vault_key(session_token)
+
+
+def _clear_all_real_vault_sessions() -> None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f'DELETE FROM {REAL_SESSION_TABLE}')
+    conn.commit()
+    conn.close()
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -171,11 +264,20 @@ def login():
 
     # ── REAL LOGIN ──────────────────────────────────────────────────────────
     if result.outcome == 'REAL':
+        salts = get_user_salts(result.user_id)
+        if not salts:
+            return render_template('login.html',
+                                   error='Unable to load vault encryption context.',
+                                   username=username)
+
+        vault_key = derive_vault_key(password, salts['vault_salt'])
+        session_token = _create_real_vault_session(result.user_id, vault_key)
+
         session.clear()
         session['user_id']    = result.user_id
         session['username']   = username
         session['vault_mode'] = 'real'           # never sent to client
-        session['real_pw']    = password         # needed for AES upload encryption
+        session['session_token'] = session_token
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
@@ -298,7 +400,7 @@ def upload():
       - Sanitises filename with werkzeug.secure_filename (strips path separators,
         null bytes, and other dangerous characters).
       - Resolves the final path with _safe_vault_path() to block directory traversal.
-            - Encrypts the uploaded bytes with AES-256-GCM before writing to vault/real/<user_id>/.
+            - Encrypts the uploaded bytes with a server-side AES-256-GCM key before writing to vault/real/<user_id>/.
 
     HONEY SESSION — Phantom Upload:
       - Accepts the multipart request normally (no UI difference).
@@ -365,8 +467,8 @@ def upload():
     # ── REAL SESSION — Genuine Upload ───────────────────────────────────────
 
     salts = get_user_salts(user_id)
-    real_password = session.get('real_pw', '')
-    if not salts or not real_password:
+    vault_key = _active_real_vault_key()
+    if not salts or not vault_key:
         flash('Upload failed due to missing encryption context.', 'error')
         return redirect(url_for('dashboard'))
 
@@ -523,22 +625,28 @@ def download(filename: str):
         return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
     salts = get_user_salts(user_id)
-    real_password = session.get('real_pw', '')
-    if not salts or not real_password:
+    vault_key = _active_real_vault_key()
+    if not salts or not vault_key:
         flash('Unable to access file.', 'error')
         return redirect(url_for('dashboard'))
 
     with open(target, 'rb') as f:
         ciphertext = f.read()
 
-    plaintext = aes_decrypt(ciphertext, real_password, salts['vault_salt'])
+    plaintext = aes_decrypt_with_key(ciphertext, vault_key)
     return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
 
 @app.route('/logout', methods=['POST'])
 def logout():
+    session_token = session.get('session_token')
+    if session_token:
+        _clear_real_vault_session(session_token)
     session.clear()
     return redirect(url_for('login'))
+
+
+_ensure_real_vault_session_table()
 
 
 # ════════════════════════════════════════════════════════════════════════════

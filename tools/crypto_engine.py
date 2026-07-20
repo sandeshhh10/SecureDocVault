@@ -77,6 +77,16 @@ def _derive_aes_keys(password: str, salt: bytes):
     return material[:32], material[32:]
 
 
+def derive_vault_key(password: str, salt: bytes) -> bytes:
+    """Public wrapper for deriving a 256-bit real-vault key from password+salt."""
+    return _derive_key(password, salt)
+
+
+def _mac_key_from_vault_key(vault_key: bytes) -> bytes:
+    """Derive a deterministic HMAC key from a pre-derived 32-byte vault key."""
+    return hashlib.sha256(vault_key + b':mac').digest()
+
+
 # ---------------------------------------------------------------------------
 # XOR Cipher — Honey Vault
 # ---------------------------------------------------------------------------
@@ -157,6 +167,29 @@ def aes_decrypt(blob: bytes, password: str, salt: bytes) -> bytes:
         raise ValueError("HMAC authentication failed — ciphertext may be tampered or password is incorrect.")
 
     return cbc_decrypt(iv_and_ciphertext, aes_key)
+
+
+def aes_decrypt_with_key(blob: bytes, key: bytes) -> bytes:
+    """Decrypts and authenticates a CBC+HMAC blob with a pre-derived 32-byte key."""
+    if len(blob) < AES_IV_SIZE + HMAC_TAG_SIZE:
+        raise ValueError("Ciphertext blob is too short to contain IV + tag.")
+
+    iv_and_ciphertext = blob[:-HMAC_TAG_SIZE]
+    tag = blob[-HMAC_TAG_SIZE:]
+    mac_key = _mac_key_from_vault_key(key)
+    expected_tag = hmac.new(mac_key, iv_and_ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_tag, tag):
+        raise ValueError("HMAC authentication failed — ciphertext may be tampered or key is incorrect.")
+
+    return cbc_decrypt(iv_and_ciphertext, key)
+
+
+def aes_encrypt_with_key(plaintext: bytes, key: bytes) -> bytes:
+    """Encrypts plaintext into a CBC+HMAC blob using a pre-derived 32-byte key."""
+    iv_and_ciphertext = cbc_encrypt(plaintext, key)
+    mac_key = _mac_key_from_vault_key(key)
+    tag = hmac.new(mac_key, iv_and_ciphertext, hashlib.sha256).digest()
+    return iv_and_ciphertext + tag
 
 
 # ---------------------------------------------------------------------------

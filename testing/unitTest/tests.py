@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'tools'))
 from crypto_engine import (
     xor_encrypt, xor_decrypt,
     aes_encrypt, aes_decrypt,
+    derive_vault_key,
     _derive_key,
     PBKDF2_ITERATIONS, PBKDF2_DKLEN
 )
@@ -269,8 +270,13 @@ class TestFlaskRoutes(unittest.TestCase):
             self.app = app_module.app
             self.client = self.app.test_client()
             self.app.config['TESTING'] = True
+            self.app_module._clear_all_real_vault_sessions()
         except ImportError:
             self.skipTest("Flask app not importable")
+
+    def tearDown(self):
+        if hasattr(self, 'app_module'):
+            self.app_module._clear_all_real_vault_sessions()
 
     def _set_honey_session(self, user_id, honey_pw='HoneyPw!23'):
         with self.client.session_transaction() as sess:
@@ -281,12 +287,14 @@ class TestFlaskRoutes(unittest.TestCase):
             sess['phantom_hidden'] = []
             sess['phantom_uploaded'] = []
 
-    def _set_real_session(self, user_id, real_pw='RealPw!23'):
+    def _set_real_session(self, user_id, vault_salt, real_pw='RealPw!23'):
+        session_token = self.app_module._create_real_vault_session(user_id, derive_vault_key(real_pw, vault_salt))
         with self.client.session_transaction() as sess:
             sess['user_id'] = user_id
             sess['username'] = 'tester'
             sess['vault_mode'] = 'real'
-            sess['real_pw'] = real_pw
+            sess['session_token'] = session_token
+        return session_token
 
     def _make_decoy_file(self, user_id, filename, plaintext, honey_pw, salt):
         vault_dir = os.path.join(self.app_module.BASE_DIR, 'vault', 'decoy', user_id)
@@ -428,7 +436,7 @@ class TestFlaskRoutes(unittest.TestCase):
 
         try:
             with patch('app.get_user_salts', return_value={'vault_salt': vault_salt, 'honeyset_salt': os.urandom(32)}):
-                self._set_real_session(user_id, real_pw)
+                session_token = self._set_real_session(user_id, vault_salt, real_pw)
                 upload_response = self.client.post(
                     '/upload',
                     data={'file': (BytesIO(plaintext), filename)},
@@ -439,6 +447,14 @@ class TestFlaskRoutes(unittest.TestCase):
             self.assertEqual(upload_response.status_code, 200)
             self.assertTrue(os.path.exists(file_path))
 
+            conn = sqlite3.connect(self.app_module.DB_PATH)
+            row = conn.execute(
+                f'SELECT vault_key FROM {self.app_module.REAL_SESSION_TABLE} WHERE session_token=?',
+                (session_token,)
+            ).fetchone()
+            conn.close()
+            self.assertIsNotNone(row)
+
             with open(file_path, 'rb') as f:
                 on_disk = f.read()
 
@@ -446,11 +462,19 @@ class TestFlaskRoutes(unittest.TestCase):
             self.assertEqual(aes_decrypt(on_disk, real_pw, vault_salt), plaintext)
 
             with patch('app.get_user_salts', return_value={'vault_salt': vault_salt, 'honeyset_salt': os.urandom(32)}):
-                self._set_real_session(user_id, real_pw)
                 download_response = self.client.get(f'/download/{filename}')
 
             self.assertEqual(download_response.status_code, 200)
             self.assertEqual(download_response.data, plaintext)
+
+            self.client.post('/logout')
+            conn = sqlite3.connect(self.app_module.DB_PATH)
+            row = conn.execute(
+                f'SELECT 1 FROM {self.app_module.REAL_SESSION_TABLE} WHERE session_token=?',
+                (session_token,)
+            ).fetchone()
+            conn.close()
+            self.assertIsNone(row)
         finally:
             if os.path.exists(file_path):
                 os.remove(file_path)
