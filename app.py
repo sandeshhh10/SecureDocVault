@@ -26,12 +26,13 @@ import uuid
 import secrets
 from datetime import datetime, timezone
 from flask import (Flask, render_template, request, redirect,
-                   url_for, session, flash, jsonify)
+                   url_for, session, flash, jsonify, Response)
 from werkzeug.utils import secure_filename
 
 # ── Local imports ──────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
 import db_backend
+from crypto_engine  import aes_encrypt, aes_decrypt, xor_decrypt
 from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
@@ -151,6 +152,7 @@ def login():
         session['user_id']    = result.user_id
         session['username']   = username
         session['vault_mode'] = 'real'           # never sent to client
+        session['vault_pw']   = password         # needed to derive the AES key
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
@@ -345,11 +347,18 @@ def upload():
             flash(f'File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.', 'error')
             return redirect(url_for('dashboard'))
 
-    # 4. Persist via the document backend (Supabase Postgres, or the local
-    #    vault when Supabase is not configured). Directory-traversal is guarded
-    #    inside db_backend.put_document for the filesystem path.
+    # 4. Encrypt with AES-256-CBC + HMAC (real vault) using a key derived from
+    #    the user's password + per-user vault salt, then persist the ciphertext.
+    #    The document backend only ever sees encrypted bytes — plaintext never
+    #    touches Supabase or disk.
+    vault_pw = session.get('vault_pw')
+    salts    = get_user_salts(user_id)
+    if not vault_pw or not salts:
+        flash('Session expired — please log in again.', 'error')
+        return redirect(url_for('login'))
     try:
-        stored = db_backend.put_document(user_id, 'real', safe_name, bytes(buffer))
+        blob   = aes_encrypt(bytes(buffer), vault_pw, salts['vault_salt'])
+        stored = db_backend.put_document(user_id, 'real', safe_name, blob)
     except Exception:
         flash('Upload failed due to a server error.', 'error')
         return redirect(url_for('dashboard'))
@@ -360,6 +369,47 @@ def upload():
 
     flash(f'"{safe_name}" uploaded successfully.', 'success')
     return redirect(url_for('dashboard'))
+
+
+@app.route('/download/<path:filename>')
+def download(filename):
+    """
+    Streams a decrypted document back to the user.
+
+      REAL vault  → AES-256-CBC + HMAC decrypt (raises on wrong key / tamper).
+      HONEY vault → XOR decrypt (always yields plausible content, by design).
+
+    Same response shape for both modes, preserving Honey Mode Silence.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    user_id    = session['user_id']
+    vault_mode = session.get('vault_mode', 'real')
+    vault_type = 'real' if vault_mode == 'real' else 'decoy'
+    safe_name  = secure_filename(filename)
+
+    blob  = db_backend.get_document(user_id, vault_type, safe_name)
+    salts = get_user_salts(user_id)
+    if blob is None or not salts:
+        flash('File not found.', 'error')
+        return redirect(url_for('dashboard'))
+
+    try:
+        if vault_mode == 'real':
+            data = aes_decrypt(blob, session.get('vault_pw', ''), salts['vault_salt'])
+        else:
+            data = xor_decrypt(blob, session.get('honey_pw', ''), salts['honeyset_salt'])
+    except ValueError:
+        # Wrong key or tampered ciphertext (real vault only — XOR never raises).
+        flash('Could not open file.', 'error')
+        return redirect(url_for('dashboard'))
+
+    return Response(
+        data,
+        mimetype='application/octet-stream',
+        headers={'Content-Disposition': f'attachment; filename="{safe_name}"'},
+    )
 
 
 @app.route('/delete/<path:filename>', methods=['POST'])

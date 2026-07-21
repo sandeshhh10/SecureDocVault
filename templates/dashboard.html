@@ -418,7 +418,9 @@
         {% elif 'CONFIDENTIAL' in f.name %}🔏
         {% else %}📝{% endif %}
       </div>
-      <div class="file-name" title="{{ f.name }}">{{ f.name }}</div>
+      <div class="file-name" title="Download {{ f.name }}">
+        <a href="/download/{{ f.name }}" style="color:inherit; text-decoration:none;">{{ f.name }}</a>
+      </div>
       <div class="file-type">{{ f.name.rsplit('.',1)[-1] if '.' in f.name else '—' }}</div>
       <div class="file-date">{{ f.modified }}</div>
       <div class="file-size">{{ f.size }}</div>
