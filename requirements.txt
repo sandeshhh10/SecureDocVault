@@ -4,6 +4,10 @@
 flask>=3.0.0
 reportlab>=4.0.0
 
+# Production WSGI server (used when hosting, e.g. on Render). Not needed for
+# local `python run.py`, and it doesn't run on Windows — Linux hosts only.
+gunicorn>=21.2.0
+
 # Supabase backend (OPTIONAL) — only needed when SUPABASE_DB_URL is set.
 # Talks to Supabase Postgres directly with a lightweight DB driver (no SDK).
 # Without SUPABASE_DB_URL the app falls back to local SQLite + vault/ folders.
