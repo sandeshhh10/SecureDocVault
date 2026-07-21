@@ -226,10 +226,11 @@ def _clear_real_vault_session(session_token: str) -> None:
 
 
 def _active_real_vault_key() -> bytes | None:
-    session_token = session.get('session_token')
-    if not session_token:
-        return None
-    return _get_real_vault_key(session_token)
+    # The real-vault AES key is kept in the signed session cookie (client-side),
+    # so it survives server restarts / ephemeral hosting (e.g. Render free tier),
+    # where a local on-disk key store would be wiped between requests.
+    hex_key = session.get('vault_key')
+    return bytes.fromhex(hex_key) if hex_key else None
 
 
 def _clear_all_real_vault_sessions() -> None:
@@ -271,13 +272,15 @@ def login():
                                    username=username)
 
         vault_key = derive_vault_key(password, salts['vault_salt'])
-        session_token = _create_real_vault_session(result.user_id, vault_key)
 
         session.clear()
         session['user_id']    = result.user_id
         session['username']   = username
         session['vault_mode'] = 'real'           # never sent to client
-        session['session_token'] = session_token
+        # Store the derived AES key in the signed session cookie. It is signed
+        # with SECDOC_SECRET (tamper-proof) and holds a derived key, never the
+        # password. This keeps decryption working on restart-prone free hosting.
+        session['vault_key']  = vault_key.hex()
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
@@ -641,14 +644,9 @@ def download(filename: str):
 
 @app.route('/logout', methods=['POST'])
 def logout():
-    session_token = session.get('session_token')
-    if session_token:
-        _clear_real_vault_session(session_token)
+    # session.clear() drops the vault key (and everything else) from the cookie.
     session.clear()
     return redirect(url_for('login'))
-
-
-_ensure_real_vault_session_table()
 
 
 # ════════════════════════════════════════════════════════════════════════════
