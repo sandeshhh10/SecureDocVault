@@ -494,11 +494,12 @@ def upload():
             flash(f'File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.', 'error')
             return redirect(url_for('dashboard'))
 
-    # 4. Persist via the document backend (Supabase Postgres, or the local
-    #    vault when Supabase is not configured). Directory-traversal is guarded
-    #    inside db_backend.put_document for the filesystem path.
+    # 4. Encrypt with the real-vault AES key, then persist the CIPHERTEXT via the
+    #    document backend (Supabase Postgres, or the local vault when Supabase is
+    #    not configured). Plaintext never reaches storage.
     try:
-        stored = db_backend.put_document(user_id, 'real', safe_name, bytes(buffer))
+        blob   = aes_encrypt_with_key(bytes(buffer), vault_key)
+        stored = db_backend.put_document(user_id, 'real', safe_name, blob)
     except Exception:
         flash('Upload failed due to a server error.', 'error')
         return redirect(url_for('dashboard'))
@@ -598,10 +599,12 @@ def download(filename: str):
         flash('Invalid filename.', 'error')
         return redirect(url_for('dashboard'))
 
-    vault_root = REAL_VAULT if vault_mode == 'real' else DECOY_VAULT
-    target     = _safe_vault_path(vault_root, user_id, safe_name)
+    # Read the stored (encrypted) bytes from the document backend — same place
+    # uploads are written, so this works with Supabase and the local vault alike.
+    vault_type = 'real' if vault_mode == 'real' else 'decoy'
+    ciphertext = db_backend.get_document(user_id, vault_type, safe_name)
 
-    if target is None or not os.path.isfile(target):
+    if ciphertext is None:
         flash(f'"{safe_name}" not found in your vault.', 'error')
         return redirect(url_for('dashboard'))
 
@@ -610,9 +613,6 @@ def download(filename: str):
         if not salts:
             flash('Unable to access file.', 'error')
             return redirect(url_for('dashboard'))
-
-        with open(target, 'rb') as f:
-            ciphertext = f.read()
 
         plaintext = xor_decrypt(ciphertext, session.get('honey_pw', ''), salts['honeyset_salt'])
         _phantom_log('PHANTOM_DOWNLOAD', {
@@ -624,16 +624,18 @@ def download(filename: str):
 
         return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
-    salts = get_user_salts(user_id)
+    # Real vault — decrypt with the AES key from the active session.
     vault_key = _active_real_vault_key()
-    if not salts or not vault_key:
+    if not vault_key:
         flash('Unable to access file.', 'error')
         return redirect(url_for('dashboard'))
 
-    with open(target, 'rb') as f:
-        ciphertext = f.read()
+    try:
+        plaintext = aes_decrypt_with_key(ciphertext, vault_key)
+    except ValueError:
+        flash('Unable to decrypt file (wrong key or corrupted data).', 'error')
+        return redirect(url_for('dashboard'))
 
-    plaintext = aes_decrypt_with_key(ciphertext, vault_key)
     return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
 
 
