@@ -1,0 +1,23 @@
+# Render Blueprint — one-file description of how to run Secure-Doc.
+# In the Render dashboard: New + → Blueprint → pick this repo. Render reads
+# this file, then prompts you for the two secret values below.
+#
+# IMPORTANT (Supabase on Render): Render's free tier has NO IPv6 egress, but
+# Supabase's *direct* connection (db.<ref>.supabase.co) is IPv6-only. So the
+# SUPABASE_DB_URL you paste here MUST be the Supabase "Session pooler" URL
+# (host looks like aws-0-<region>.pooler.supabase.com, user postgres.<ref>).
+# The raw password still goes in SUPABASE_DB_PASSWORD — no URL-encoding needed.
+services:
+  - type: web
+    name: securedocvault
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: SUPABASE_DB_URL          # paste the Supabase SESSION POOLER URL
+        sync: false
+      - key: SUPABASE_DB_PASSWORD     # paste the raw DB password
+        sync: false
+      - key: SECDOC_SECRET            # stable Flask session key
+        generateValue: true
