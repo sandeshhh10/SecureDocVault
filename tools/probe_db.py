@@ -2,6 +2,7 @@
 Phase 2 Link Probe: secure_doc.db
 Initializes the application database schema and verifies connectivity.
 Tables: users, honeysets, real_index
+Tables: users, honeysets, real_index, real_vault_sessions
 """
 
 import sqlite3
@@ -33,6 +34,18 @@ CREATE TABLE IF NOT EXISTS real_index (
     user_id      TEXT PRIMARY KEY REFERENCES users(user_id),
     real_idx     INTEGER NOT NULL    -- the shuffled position of the real password
 );
+
+-- Server-side real vault sessions: stores the derived key behind an opaque token
+CREATE TABLE IF NOT EXISTS real_vault_sessions (
+    session_token TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    vault_key     BLOB NOT NULL,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_real_vault_sessions_user_id
+    ON real_vault_sessions(user_id);
 """
 
 def init_db():

@@ -24,31 +24,41 @@ import sys
 import json
 import uuid
 import secrets
-from datetime import datetime, timezone
+import sqlite3
+from io import BytesIO
+from datetime import datetime, timezone, timedelta
 from flask import (Flask, render_template, request, redirect,
-                   url_for, session, flash, jsonify, Response)
+                   url_for, session, flash, jsonify, send_file)
 from werkzeug.utils import secure_filename
 
 # ── Local imports ──────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
 import db_backend
-from crypto_engine  import aes_encrypt, aes_decrypt, xor_decrypt
 from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
 from vault_watchdog import check_and_heal
+from crypto_engine  import (
+    xor_decrypt,
+    aes_decrypt_with_key,
+    aes_encrypt_with_key,
+    derive_vault_key,
+)
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECDOC_SECRET', os.urandom(32))
 
 BASE_DIR    = os.path.dirname(__file__)
+DB_PATH     = os.path.join(BASE_DIR, 'secure_doc.db')
 REAL_VAULT  = os.path.join(BASE_DIR, 'vault', 'real')
 DECOY_VAULT = os.path.join(BASE_DIR, 'vault', 'decoy')
 LOG_PATH    = os.path.join(BASE_DIR, 'logs', 'intrusion_audit.log')
 
 # Maximum file size accepted from any user (16 MB)
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+
+REAL_SESSION_TABLE = 'real_vault_sessions'
 
 # File extensions permitted in the real vault
 ALLOWED_EXTENSIONS = {
@@ -120,8 +130,115 @@ def _vault_files(vault_dir: str, user_id: str) -> list[dict]:
     return files
 
 
+def _format_display_size(size: int) -> str:
+    return f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
+
+
+def _phantom_uploaded_files() -> list[dict]:
+    files = []
+    for item in session.get('phantom_uploaded', []):
+        uploaded_at = item.get('uploaded_at', '')
+        try:
+            modified = datetime.fromisoformat(uploaded_at).strftime('%d %b %Y')
+        except ValueError:
+            modified = datetime.now(timezone.utc).strftime('%d %b %Y')
+
+        files.append({
+            'name': item.get('filename', 'unknown'),
+            'size': _format_display_size(int(item.get('size', 0))),
+            'modified': modified,
+        })
+
+    return files
+
+
 def _client_ip() -> str:
     return request.headers.get('X-Forwarded-For', request.remote_addr or '0.0.0.0')
+
+
+def _ensure_real_vault_session_table() -> None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        f'''
+        CREATE TABLE IF NOT EXISTS {REAL_SESSION_TABLE} (
+            session_token TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            vault_key     BLOB NOT NULL,
+            created_at    TEXT NOT NULL,
+            expires_at    TEXT NOT NULL
+        )
+        '''
+    )
+    conn.execute(
+        f'CREATE INDEX IF NOT EXISTS idx_{REAL_SESSION_TABLE}_user_id ON {REAL_SESSION_TABLE}(user_id)'
+    )
+    conn.commit()
+    conn.close()
+
+
+def _create_real_vault_session(user_id: str, vault_key: bytes) -> str:
+    _ensure_real_vault_session_table()
+    session_token = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=12)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        f'''
+        INSERT INTO {REAL_SESSION_TABLE} (session_token, user_id, vault_key, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (session_token, user_id, vault_key, now.isoformat(), expires_at.isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return session_token
+
+
+def _get_real_vault_key(session_token: str) -> bytes | None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        f'SELECT vault_key, expires_at FROM {REAL_SESSION_TABLE} WHERE session_token=?',
+        (session_token,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    vault_key, expires_at = row
+    if expires_at and expires_at <= datetime.now(timezone.utc).isoformat():
+        conn.execute(f'DELETE FROM {REAL_SESSION_TABLE} WHERE session_token=?', (session_token,))
+        conn.commit()
+        conn.close()
+        return None
+
+    conn.close()
+    return vault_key
+
+
+def _clear_real_vault_session(session_token: str) -> None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f'DELETE FROM {REAL_SESSION_TABLE} WHERE session_token=?', (session_token,))
+    conn.commit()
+    conn.close()
+
+
+def _active_real_vault_key() -> bytes | None:
+    # The real-vault AES key is kept in the signed session cookie (client-side),
+    # so it survives server restarts / ephemeral hosting (e.g. Render free tier),
+    # where a local on-disk key store would be wiped between requests.
+    hex_key = session.get('vault_key')
+    return bytes.fromhex(hex_key) if hex_key else None
+
+
+def _clear_all_real_vault_sessions() -> None:
+    _ensure_real_vault_session_table()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f'DELETE FROM {REAL_SESSION_TABLE}')
+    conn.commit()
+    conn.close()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -148,11 +265,22 @@ def login():
 
     # ── REAL LOGIN ──────────────────────────────────────────────────────────
     if result.outcome == 'REAL':
+        salts = get_user_salts(result.user_id)
+        if not salts:
+            return render_template('login.html',
+                                   error='Unable to load vault encryption context.',
+                                   username=username)
+
+        vault_key = derive_vault_key(password, salts['vault_salt'])
+
         session.clear()
         session['user_id']    = result.user_id
         session['username']   = username
         session['vault_mode'] = 'real'           # never sent to client
-        session['vault_pw']   = password         # needed to derive the AES key
+        # Store the derived AES key in the signed session cookie. It is signed
+        # with SECDOC_SECRET (tamper-proof) and holds a derived key, never the
+        # password. This keeps decryption working on restart-prone free hosting.
+        session['vault_key']  = vault_key.hex()
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
@@ -191,6 +319,8 @@ def login():
         session['vault_mode'] = 'decoy'          # never sent to client
         session['honey_pw']   = password         # needed by watchdog for XOR re-keying
         session['high_alert'] = high_alert       # Rule 4.2 flag for watchdog
+        session['phantom_hidden'] = []
+        session['phantom_uploaded'] = []
         return redirect(url_for('dashboard'))
 
     # ── FAILED LOGIN ────────────────────────────────────────────────────────
@@ -253,6 +383,11 @@ def dashboard():
     vault_type = 'real' if vault_mode == 'real' else 'decoy'
     files      = db_backend.list_documents(user_id, vault_type)
 
+    if vault_mode == 'decoy':
+        hidden = set(session.get('phantom_hidden', []))
+        files = [f for f in files if f['name'] not in hidden]
+        files.extend(_phantom_uploaded_files())
+
     # Render identical template regardless of vault_mode
     return render_template('dashboard.html', username=username, files=files)
 
@@ -268,7 +403,7 @@ def upload():
       - Sanitises filename with werkzeug.secure_filename (strips path separators,
         null bytes, and other dangerous characters).
       - Resolves the final path with _safe_vault_path() to block directory traversal.
-      - Writes file to vault/real/<user_id>/.
+            - Encrypts the uploaded bytes with a server-side AES-256-GCM key before writing to vault/real/<user_id>/.
 
     HONEY SESSION — Phantom Upload:
       - Accepts the multipart request normally (no UI difference).
@@ -316,14 +451,29 @@ def upload():
             'sanitised_filename': safe_name,
             'declared_content_type': file.content_type or 'unknown',
             'bytes_received': total_bytes,
-            'action': 'DISCARDED — file stream drained, nothing written to disk',
+            'action': 'DISCARDED',
         })
+
+        phantom_uploaded = session.get('phantom_uploaded', [])
+        phantom_uploaded.append({
+            'filename': safe_name,
+            'size': total_bytes,
+            'uploaded_at': datetime.now(timezone.utc).isoformat(),
+        })
+        session['phantom_uploaded'] = phantom_uploaded
+        session.modified = True
 
         # Return identical success experience
         flash(f'"{safe_name}" uploaded successfully.', 'success')
         return redirect(url_for('dashboard'))
 
     # ── REAL SESSION — Genuine Upload ───────────────────────────────────────
+
+    salts = get_user_salts(user_id)
+    vault_key = _active_real_vault_key()
+    if not salts or not vault_key:
+        flash('Upload failed due to missing encryption context.', 'error')
+        return redirect(url_for('dashboard'))
 
     # 1. Sanitise filename
     safe_name = secure_filename(file.filename)
@@ -347,17 +497,11 @@ def upload():
             flash(f'File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.', 'error')
             return redirect(url_for('dashboard'))
 
-    # 4. Encrypt with AES-256-CBC + HMAC (real vault) using a key derived from
-    #    the user's password + per-user vault salt, then persist the ciphertext.
-    #    The document backend only ever sees encrypted bytes — plaintext never
-    #    touches Supabase or disk.
-    vault_pw = session.get('vault_pw')
-    salts    = get_user_salts(user_id)
-    if not vault_pw or not salts:
-        flash('Session expired — please log in again.', 'error')
-        return redirect(url_for('login'))
+    # 4. Encrypt with the real-vault AES key, then persist the CIPHERTEXT via the
+    #    document backend (Supabase Postgres, or the local vault when Supabase is
+    #    not configured). Plaintext never reaches storage.
     try:
-        blob   = aes_encrypt(bytes(buffer), vault_pw, salts['vault_salt'])
+        blob   = aes_encrypt_with_key(bytes(buffer), vault_key)
         stored = db_backend.put_document(user_id, 'real', safe_name, blob)
     except Exception:
         flash('Upload failed due to a server error.', 'error')
@@ -369,47 +513,6 @@ def upload():
 
     flash(f'"{safe_name}" uploaded successfully.', 'success')
     return redirect(url_for('dashboard'))
-
-
-@app.route('/download/<path:filename>')
-def download(filename):
-    """
-    Streams a decrypted document back to the user.
-
-      REAL vault  → AES-256-CBC + HMAC decrypt (raises on wrong key / tamper).
-      HONEY vault → XOR decrypt (always yields plausible content, by design).
-
-    Same response shape for both modes, preserving Honey Mode Silence.
-    """
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-
-    user_id    = session['user_id']
-    vault_mode = session.get('vault_mode', 'real')
-    vault_type = 'real' if vault_mode == 'real' else 'decoy'
-    safe_name  = secure_filename(filename)
-
-    blob  = db_backend.get_document(user_id, vault_type, safe_name)
-    salts = get_user_salts(user_id)
-    if blob is None or not salts:
-        flash('File not found.', 'error')
-        return redirect(url_for('dashboard'))
-
-    try:
-        if vault_mode == 'real':
-            data = aes_decrypt(blob, session.get('vault_pw', ''), salts['vault_salt'])
-        else:
-            data = xor_decrypt(blob, session.get('honey_pw', ''), salts['honeyset_salt'])
-    except ValueError:
-        # Wrong key or tampered ciphertext (real vault only — XOR never raises).
-        flash('Could not open file.', 'error')
-        return redirect(url_for('dashboard'))
-
-    return Response(
-        data,
-        mimetype='application/octet-stream',
-        headers={'Content-Disposition': f'attachment; filename="{safe_name}"'},
-    )
 
 
 @app.route('/delete/<path:filename>', methods=['POST'])
@@ -442,6 +545,12 @@ def delete(filename: str):
 
     # ── HONEY SESSION — Phantom Delete ─────────────────────────────────────
     if vault_mode == 'decoy':
+        phantom_hidden = session.get('phantom_hidden', [])
+        if safe_name not in phantom_hidden:
+            phantom_hidden.append(safe_name)
+        session['phantom_hidden'] = phantom_hidden
+        session.modified = True
+
         _phantom_log('PHANTOM_DELETE', {
             'requested_filename': filename,
             'sanitised_filename': safe_name,
@@ -469,8 +578,73 @@ def delete(filename: str):
     return redirect(url_for('dashboard'))
 
 
+@app.route('/download/<path:filename>', methods=['GET'])
+def download(filename: str):
+    """
+    Serves a file from the active vault.
+
+    REAL SESSION:
+      - Resolves the requested file inside vault/real/<user_id>/.
+            - Decrypts the AES-256-GCM blob and streams the plaintext back as an attachment.
+
+    HONEY SESSION:
+      - Resolves the requested file inside vault/decoy/<user_id>/.
+      - Logs the access as a phantom download while returning the decoy file.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    vault_mode = session.get('vault_mode', 'real')
+    user_id    = session['user_id']
+    safe_name  = secure_filename(filename)
+
+    if not safe_name:
+        flash('Invalid filename.', 'error')
+        return redirect(url_for('dashboard'))
+
+    # Read the stored (encrypted) bytes from the document backend — same place
+    # uploads are written, so this works with Supabase and the local vault alike.
+    vault_type = 'real' if vault_mode == 'real' else 'decoy'
+    ciphertext = db_backend.get_document(user_id, vault_type, safe_name)
+
+    if ciphertext is None:
+        flash(f'"{safe_name}" not found in your vault.', 'error')
+        return redirect(url_for('dashboard'))
+
+    if vault_mode == 'decoy':
+        salts = get_user_salts(user_id)
+        if not salts:
+            flash('Unable to access file.', 'error')
+            return redirect(url_for('dashboard'))
+
+        plaintext = xor_decrypt(ciphertext, session.get('honey_pw', ''), salts['honeyset_salt'])
+        _phantom_log('PHANTOM_DOWNLOAD', {
+            'requested_filename': filename,
+            'sanitised_filename': safe_name,
+            'size': len(plaintext),
+            'action': 'DECRYPTED and returned to caller',
+        })
+
+        return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
+
+    # Real vault — decrypt with the AES key from the active session.
+    vault_key = _active_real_vault_key()
+    if not vault_key:
+        flash('Unable to access file.', 'error')
+        return redirect(url_for('dashboard'))
+
+    try:
+        plaintext = aes_decrypt_with_key(ciphertext, vault_key)
+    except ValueError:
+        flash('Unable to decrypt file (wrong key or corrupted data).', 'error')
+        return redirect(url_for('dashboard'))
+
+    return send_file(BytesIO(plaintext), as_attachment=True, download_name=safe_name)
+
+
 @app.route('/logout', methods=['POST'])
 def logout():
+    # session.clear() drops the vault key (and everything else) from the cookie.
     session.clear()
     return redirect(url_for('login'))
 
