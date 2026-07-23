@@ -34,6 +34,8 @@ from werkzeug.utils import secure_filename
 # ── Local imports ──────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
 import db_backend
+import account_lock
+import log_analytics
 from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
@@ -156,6 +158,35 @@ def _client_ip() -> str:
     return request.headers.get('X-Forwarded-For', request.remote_addr or '0.0.0.0')
 
 
+def _lock_message(seconds: int) -> str:
+    """Human-friendly 'account locked for N minutes' message."""
+    minutes = max(1, (seconds + 59) // 60)   # round up to whole minutes
+    unit = 'minute' if minutes == 1 else 'minutes'
+    return (f'Too many failed attempts. This account is locked for '
+            f'{minutes} {unit}. Please try again later.')
+
+
+def _log_security_event(event: str, extra: dict) -> None:
+    """
+    Appends a security event (e.g. ACCOUNT_LOCKED) to the real intrusion audit
+    log, so it surfaces in the admin dashboard table and trend charts. Unlike
+    _phantom_log this does not assume an active session — it is used on the
+    login path where no user is signed in.
+    """
+    entry = {
+        "log_id":     str(uuid.uuid4()),
+        "timestamp":  datetime.now(timezone.utc).isoformat(),
+        "event_type": event,
+        "ip_address": _client_ip(),
+        "user_agent": request.headers.get('User-Agent', ''),
+        "alert_level": "HIGH",
+        **extra,
+    }
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    with open(LOG_PATH, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
 def _ensure_real_vault_session_table() -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -261,10 +292,26 @@ def login():
                                error='Please enter both username and password.',
                                username=username)
 
+    # Resolve the login OUTCOME first, then decide on lockout. Checking the
+    # outcome before the lock lets us exempt HONEY entirely (Rule 1): an
+    # intruder who matched a honeyword is never locked out, no matter how many
+    # times they retry. Only genuine REAL access and outright FAILED attempts
+    # are subject to the brute-force lock.
     result = check_login(username, password)
 
     # ── REAL LOGIN ──────────────────────────────────────────────────────────
     if result.outcome == 'REAL':
+        # A correct password is still refused while the account is locked — the
+        # lock is the whole point of the feature (standard account protection).
+        locked, secs = account_lock.lock_status(username)
+        if locked:
+            return render_template('login.html',
+                                   error=_lock_message(secs),
+                                   username=username)
+
+        # Genuine success clears the failed-attempt tally.
+        account_lock.reset(username)
+
         salts = get_user_salts(result.user_id)
         if not salts:
             return render_template('login.html',
@@ -284,6 +331,9 @@ def login():
         return redirect(url_for('dashboard'))
 
     # ── HONEY LOGIN ─────────────────────────────────────────────────────────
+    # Deliberately exempt from the brute-force lock: we never call
+    # account_lock.record_failure()/reset() here, so an intruder who keeps
+    # entering a honeyword is kept engaged in the decoy vault indefinitely.
     elif result.outcome == 'HONEY':
         prior_failures = session.get('session_attempts', 0)
         high_alert     = prior_failures > 3   # Rule 4.2 threshold
@@ -325,8 +375,23 @@ def login():
 
     # ── FAILED LOGIN ────────────────────────────────────────────────────────
     else:
-        # Rule 4.2: increment in-session counter (never persisted to DB)
+        # Rule 4.2: increment in-session counter (never persisted; drives honey
+        # escalation alert level only).
         session['session_attempts'] = session.get('session_attempts', 0) + 1
+
+        # Persistent brute-force lockout: 5 failures → locked for 15 minutes.
+        # HONEY never reaches this branch, so the honeypot is never locked.
+        locked, secs = account_lock.record_failure(username)
+        if locked:
+            _log_security_event('ACCOUNT_LOCKED', {
+                'username_attempted': username,
+                'action': (f'Account locked for {account_lock.LOCK_MINUTES} minutes '
+                           f'after {account_lock.MAX_FAILED} failed login attempts.'),
+            })
+            return render_template('login.html',
+                                   error=_lock_message(secs),
+                                   username=username)
+
         return render_template('login.html',
                                error='Invalid username or password.',
                                username=username)
@@ -820,12 +885,15 @@ def admin_dashboard():
         entries   = _read_log(REAL_LOG_PATH)
         log_label = 'Intrusion Audit Log'
 
+    charts = log_analytics.build_chart_data(entries)
+
     return render_template(
         'admin_dashboard.html',
         entries    = entries,
         log_label  = log_label,
         is_intruder= is_intruder,
         entry_count= len(entries),
+        charts     = charts,
     )
 
 
