@@ -17,7 +17,7 @@
       --accent:    #3b82f6;
       --accent-dk: #1d4ed8;
       --text:      #94a3b8;
-      --text-dim:  #334155;
+      --text-dim:  #64748b;
       --text-hi:   #f1f5f9;
       --mono:      'DM Mono', monospace;
       --sans:      'Syne', sans-serif;
@@ -142,7 +142,8 @@
     /* ── Stats row ── */
     .stats-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      grid-auto-flow: column;
+      width: fit-content;
       gap: 1px;
       background: var(--border);
       border: 1px solid var(--border);
@@ -152,7 +153,8 @@
     }
     .stat-cell {
       background: var(--surface);
-      padding: 1.1rem 1.4rem;
+      padding: 1.1rem 1.6rem;
+      min-width: 150px;
     }
     .stat-label {
       font-family: var(--mono); font-size: 0.62rem;
@@ -222,16 +224,16 @@
     }
     .file-type {
       font-family: var(--mono); font-size: 0.7rem;
-      color: var(--text-dim); text-transform: uppercase;
+      color: var(--text); text-transform: uppercase;
       letter-spacing: 0.06em;
     }
     .file-size {
       font-family: var(--mono); font-size: 0.72rem;
-      color: var(--text-dim);
+      color: var(--text);
     }
     .file-date {
       font-family: var(--mono); font-size: 0.7rem;
-      color: var(--text-dim);
+      color: var(--text);
     }
 
     .badge-enc {
@@ -380,7 +382,6 @@
   <div class="page-header">
     <div>
       <div class="page-title">Document Vault</div>
-      <div class="page-title-sub">ENCRYPTED · READ/WRITE · AES-256-GCM</div>
     </div>
   </div>
 
@@ -389,18 +390,6 @@
     <div class="stat-cell">
       <div class="stat-label">Documents</div>
       <div class="stat-value accent">{{ files|length }}</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-label">Vault</div>
-      <div class="stat-value green" style="font-size:0.85rem; padding-top:0.2rem;">● LOCKED</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-label">Cipher</div>
-      <div class="stat-value" style="font-size:0.8rem; padding-top:0.2rem; color:var(--text);">AES-256-GCM</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-label">Session</div>
-      <div class="stat-value" style="font-size:0.78rem; padding-top:0.2rem; color:var(--text);">Active</div>
     </div>
   </div>
 
@@ -462,10 +451,7 @@
 
   <!-- Footer -->
   <div class="vault-footer">
-    <span class="footer-item">🔒 End-to-end encrypted</span>
-    <span class="footer-item">◈ PBKDF2 · 200,000 iterations</span>
-    <span class="footer-item">⬡ Isolated audit log</span>
-    <span class="footer-item" style="margin-left:auto;">SecureDoc v1.0 · Academic Build</span>
+    <span class="footer-item">SecureDoc v1.0</span>
   </div>
 
 </main>
