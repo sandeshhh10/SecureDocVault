@@ -146,6 +146,8 @@ def _send_email(event: dict, text: str) -> None:
     if not conf:
         return
     import smtplib
+    import socket
+    import ssl
     from email.message import EmailMessage
 
     msg = EmailMessage()
@@ -154,10 +156,28 @@ def _send_email(event: dict, text: str) -> None:
     msg['To']      = conf['to']
     msg.set_content(text)
 
-    # Basic STARTTLS flow — works with Gmail (app password), Outlook, most relays.
-    with smtplib.SMTP(conf['host'], conf['port'], timeout=HTTP_TIMEOUT) as smtp:
+    # Force IPv4. Some hosts (notably Render's free tier) have NO IPv6 egress, so
+    # connecting to Gmail's IPv6 SMTP address fails with 'Network is unreachable'.
+    # Resolve the host to an IPv4 address and connect to that; fall back to the
+    # hostname if resolution fails (e.g. IPv4 not available).
+    host = conf['host']
+    try:
+        host = socket.getaddrinfo(conf['host'], conf['port'],
+                                  socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    except OSError:
+        pass
+
+    # We connected by IP, so the TLS cert hostname won't match — relax
+    # verification. This is a demo alerting channel, not a data path.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    with smtplib.SMTP(host, conf['port'], timeout=HTTP_TIMEOUT) as smtp:
+        smtp.ehlo()
         try:
-            smtp.starttls()
+            smtp.starttls(context=ctx)
+            smtp.ehlo()
         except smtplib.SMTPException:
             pass   # some local/test relays don't offer TLS — send anyway
         if conf['user'] and conf['password']:
