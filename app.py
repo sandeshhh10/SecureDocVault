@@ -277,13 +277,16 @@ def _clear_all_real_vault_sessions() -> None:
 
 @app.route('/')
 def index():
+    # Send signed-in users to their vault; everyone else to the login page.
+    if 'user_id' in session:
+        return redirect(url_for('dashboard'))
     return redirect(url_for('login'))
 
 
 @app.route('/privacy')
 def privacy():
     """Public privacy policy page (no authentication required)."""
-    return render_template('privacy.html')
+    return render_template('privacy.html', logged_in=('user_id' in session))
 
 
 @app.route('/login', methods=['GET', 'POST'])
