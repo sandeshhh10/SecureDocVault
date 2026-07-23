@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>SecureDoc — Privacy Policy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:        #080c12;
+      --surface:   #0e1420;
+      --border:    #1e2d47;
+      --accent:    #3b82f6;
+      --text:      #cbd5e1;
+      --text-dim:  #64748b;
+      --text-hi:   #f1f5f9;
+      --mono:      'DM Mono', monospace;
+      --sans:      'Syne', sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: var(--sans); min-height: 100vh; line-height: 1.7;
+    }
+
+    .topbar {
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem; display: flex; align-items: center; gap: 0.75rem;
+    }
+    .brand {
+      font-family: var(--mono); font-size: 0.78rem; font-weight: 500;
+      letter-spacing: 0.18em; color: var(--text-dim);
+      text-transform: uppercase; text-decoration: none;
+    }
+    .brand span { color: var(--accent); }
+    .back-link {
+      margin-left: auto; font-family: var(--mono); font-size: 0.68rem;
+      letter-spacing: 0.06em; color: var(--text-dim); text-decoration: none;
+    }
+    .back-link:hover { color: var(--accent); }
+
+    .doc { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 5rem; }
+    .doc-title {
+      font-size: 2rem; font-weight: 800; color: var(--text-hi);
+      letter-spacing: -0.02em; margin-bottom: 0.5rem;
+    }
+    .doc-meta {
+      font-family: var(--mono); font-size: 0.7rem; color: var(--text-dim);
+      letter-spacing: 0.05em; margin-bottom: 2.5rem;
+    }
+
+    .note {
+      background: rgba(59,130,246,0.06);
+      border: 1px solid rgba(59,130,246,0.22);
+      border-left: 3px solid var(--accent);
+      border-radius: 3px; padding: 0.9rem 1.1rem; margin-bottom: 2.5rem;
+      font-size: 0.86rem; color: var(--text);
+    }
+
+    h2 {
+      font-size: 1.05rem; font-weight: 700; color: var(--text-hi);
+      letter-spacing: 0.01em; margin: 2rem 0 0.7rem;
+    }
+    p { margin-bottom: 0.9rem; font-size: 0.92rem; }
+    ul { margin: 0 0 0.9rem 1.2rem; }
+    li { margin-bottom: 0.45rem; font-size: 0.92rem; }
+    strong { color: var(--text-hi); font-weight: 600; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .doc-footer {
+      margin-top: 3rem; padding-top: 1.4rem; border-top: 1px solid var(--border);
+      font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim);
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/">Secure<span>Doc</span></a>
+  <a class="back-link" href="/login">← Back to sign in</a>
+</header>
+
+<main class="doc">
+  <h1 class="doc-title">Privacy Policy</h1>
+  <div class="doc-meta">Last updated: 23 July 2026</div>
+
+  <div class="note">
+    SecureDoc is an educational security-research project that demonstrates
+    honeyword-based intrusion detection and encrypted document storage. Please
+    do not upload genuinely sensitive personal, financial, or medical documents.
+  </div>
+
+  <p>
+    This Privacy Policy explains what information SecureDoc ("we", "the service")
+    collects, how it is used, and how it is protected when you use the
+    application. By creating an account and using the service, you agree to the
+    practices described here.
+  </p>
+
+  <h2>1. Information We Collect</h2>
+  <ul>
+    <li><strong>Account credentials.</strong> A username you choose and your
+      password. Your password is never stored in plaintext — it is processed
+      with PBKDF2-HMAC-SHA256 (200,000 iterations) and stored only as a salted
+      hash within a honeyword set.</li>
+    <li><strong>Documents you upload.</strong> Files you place in your vault are
+      encrypted with AES-256-GCM before they are written to storage. We hold only
+      the encrypted ciphertext, along with the file name, size, and last-modified
+      time needed to display your vault.</li>
+    <li><strong>Session data.</strong> A signed session cookie that keeps you
+      logged in. It is cryptographically signed to prevent tampering and does not
+      contain your password.</li>
+    <li><strong>Security &amp; audit records.</strong> To protect accounts, we log
+      security-relevant events such as suspicious or failed login attempts,
+      account lockouts, and intrusion-detection triggers. These records may
+      include a timestamp, IP address, and browser user-agent string.</li>
+  </ul>
+
+  <h2>2. How We Use Your Information</h2>
+  <ul>
+    <li>To authenticate you and provide access to your document vault.</li>
+    <li>To store, list, encrypt, decrypt, and delete the documents you upload.</li>
+    <li>To detect and respond to unauthorised access — including brute-force
+      lockout after repeated failed logins and honeyword-based intrusion
+      detection.</li>
+    <li>To maintain, secure, and improve the reliability of the service.</li>
+  </ul>
+
+  <h2>3. How Your Data Is Protected</h2>
+  <p>
+    Documents are encrypted at rest with AES-256-GCM, and passwords are stored
+    only as salted PBKDF2 hashes. The service applies additional protections
+    including account lockout after repeated failed attempts and a decoy-vault
+    intrusion-detection system. No security measure is perfect, but plaintext
+    passwords and unencrypted documents are never persisted.
+  </p>
+
+  <h2>4. Cookies</h2>
+  <p>
+    We use a single, essential session cookie to keep you signed in. We do not
+    use advertising cookies or third-party tracking or analytics cookies.
+  </p>
+
+  <h2>5. Data Sharing</h2>
+  <p>
+    We do not sell your data or share it with third parties for marketing.
+    Encrypted data may be stored using infrastructure providers (for example, a
+    managed Postgres database and application hosting) solely to operate the
+    service. Those providers only ever hold opaque, encrypted content.
+  </p>
+
+  <h2>6. Data Retention</h2>
+  <p>
+    Your account data and encrypted documents are retained while your account is
+    active. Security and audit logs are retained for as long as needed to protect
+    the service. When a document is deleted from your vault, its stored ciphertext
+    is removed.
+  </p>
+
+  <h2>7. Your Choices</h2>
+  <ul>
+    <li>You can add or delete documents in your vault at any time.</li>
+    <li>You can stop using the service and request removal of your account data.</li>
+  </ul>
+
+  <h2>8. Changes to This Policy</h2>
+  <p>
+    We may update this Privacy Policy from time to time. Material changes will be
+    reflected by updating the "Last updated" date above.
+  </p>
+
+  <h2>9. Contact</h2>
+  <p>
+    Questions about this policy or your data can be directed to the SecureDoc
+    project maintainers.
+  </p>
+
+  <div class="doc-footer">
+    © 2026 SecureDoc. All rights reserved.
+  </div>
+</main>
+
+</body>
+</html>
