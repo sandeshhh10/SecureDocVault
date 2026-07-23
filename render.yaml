@@ -21,3 +21,17 @@ services:
         sync: false
       - key: SECDOC_SECRET            # stable Flask session key
         generateValue: true
+      # ── Real-time intrusion alerting (OPTIONAL) ────────────────────────────
+      # Leave blank to disable. For email, use a Gmail App Password (not your
+      # normal password). See ALERTING_SETUP.md. Values are entered in the
+      # dashboard (sync: false), so no secret is committed to the repo.
+      - key: ALERT_SMTP_HOST          # e.g. smtp.gmail.com
+        sync: false
+      - key: ALERT_SMTP_PORT          # e.g. 587
+        sync: false
+      - key: ALERT_SMTP_USER          # your sending address
+        sync: false
+      - key: ALERT_SMTP_PASSWORD      # Gmail App Password (16 chars)
+        sync: false
+      - key: ALERT_EMAIL_TO           # where alerts are delivered
+        sync: false
