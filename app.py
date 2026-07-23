@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tools'))
 import db_backend
 import account_lock
 import log_analytics
+import alerting
 from honey_checker  import register_user, check_login, get_user_salts
 from audit_logger   import log_honey_event
 from honeyfile_gen  import populate_decoy_vault
@@ -368,6 +369,17 @@ def login():
             prior_failures          = prior_failures
         )
 
+        # Respond: push a real-time alert (non-blocking; invisible to the
+        # intruder). Best-effort — never affects the response they receive.
+        alerting.send_alert(
+            'HONEY_LOGIN_GRANTED',
+            username    = username,
+            ip          = _client_ip(),
+            alert_level = 'HIGH' if high_alert else 'NORMAL',
+            detail      = (f'Honeyword slot {result.honey_index} matched — '
+                           f'intruder routed to the decoy vault.'),
+        )
+
         # Issue a normal-looking session — indistinguishable from REAL
         session.clear()
         session['user_id']    = result.user_id
@@ -394,6 +406,14 @@ def login():
                 'action': (f'Account locked for {account_lock.LOCK_MINUTES} minutes '
                            f'after {account_lock.MAX_FAILED} failed login attempts.'),
             })
+            alerting.send_alert(
+                'ACCOUNT_LOCKED',
+                username    = username,
+                ip          = _client_ip(),
+                alert_level = 'HIGH',
+                detail      = (f'{account_lock.MAX_FAILED} failed attempts — locked '
+                               f'for {account_lock.LOCK_MINUTES} minutes.'),
+            )
             return render_template('login.html',
                                    error=_lock_message(secs),
                                    username=username)
@@ -855,6 +875,12 @@ def admin_login():
             'attempted_password_len': len(password),
             'action': 'Granted access to fake_clean_audit.log — real log concealed',
         })
+        alerting.send_alert(
+            'HONEY_ADMIN_LOGIN',
+            ip          = _client_ip(),
+            alert_level = 'HIGH',
+            detail      = 'Intruder used the honey admin password — shown the fake log.',
+        )
         session.clear()
         session['role']        = 'admin'
         session['is_intruder'] = True
@@ -866,6 +892,12 @@ def admin_login():
             'attempted_password_len': len(password),
             'action': 'Invalid admin password — access denied',
         })
+        alerting.send_alert(
+            'ADMIN_LOGIN_FAILED',
+            ip          = _client_ip(),
+            alert_level = 'NORMAL',
+            detail      = 'Failed admin login attempt (wrong password).',
+        )
         return render_template('admin_login.html',
                                error='Invalid admin password.'), 401
 
@@ -895,12 +927,31 @@ def admin_dashboard():
 
     return render_template(
         'admin_dashboard.html',
-        entries    = entries,
-        log_label  = log_label,
-        is_intruder= is_intruder,
-        entry_count= len(entries),
-        charts     = charts,
+        entries        = entries,
+        log_label      = log_label,
+        is_intruder    = is_intruder,
+        entry_count    = len(entries),
+        charts         = charts,
+        # Alerting status is shown only to the real admin — never to an intruder,
+        # so the honey view stays indistinguishable (Rule 1).
+        alert_enabled  = (not is_intruder) and alerting.enabled(),
+        alert_channels = alerting.active_channels() if not is_intruder else [],
     )
+
+
+@app.route('/admin/test-alert', methods=['POST'])
+@_admin_required
+def admin_test_alert():
+    """Fires a test alert so the operator can verify their channel is wired up."""
+    # Real admin only — an intruder on the fake log must not learn alerting exists.
+    if session.get('is_intruder', True):
+        return redirect(url_for('admin_dashboard'))
+
+    if alerting.send_test_alert(triggered_by='admin'):
+        flash('Test alert sent to the configured channel(s).', 'success')
+    else:
+        flash('No alert channel configured — set ALERT_TELEGRAM_*, ALERT_WEBHOOK_URL, or ALERT_SMTP_*.', 'error')
+    return redirect(url_for('admin_dashboard'))
 
 
 @app.route('/admin/logout', methods=['POST'])

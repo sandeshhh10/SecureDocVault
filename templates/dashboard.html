@@ -329,7 +329,8 @@
     .vault-footer {
       margin-top: 2.5rem; padding-top: 1.2rem;
       border-top: 1px solid var(--border);
-      display: flex; align-items: center; gap: 1.5rem;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 0.45rem; text-align: center;
     }
     .footer-item {
       font-family: var(--mono); font-size: 0.62rem;
@@ -337,7 +338,6 @@
       text-decoration: none;
     }
     a.footer-item:hover { color: var(--accent); }
-    .footer-spacer { margin-left: auto; }
   </style>
 </head>
 <body>
@@ -445,9 +445,8 @@
 
   <!-- Footer -->
   <div class="vault-footer">
-    <span class="footer-item">SecureDoc v1.0</span>
     <span class="footer-item">© 2026 SecureDoc. All rights reserved.</span>
-    <a class="footer-item footer-spacer" href="/privacy">Privacy Policy</a>
+    <span class="footer-item">SecureDoc v1.0 · <a class="footer-item" href="/privacy">Privacy Policy</a></span>
   </div>
 
 </main>

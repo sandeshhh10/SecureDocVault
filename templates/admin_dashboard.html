@@ -98,6 +98,41 @@
     }
     .entry-count strong { color: var(--accent); }
 
+    /* ── Real-time alerting status ── */
+    .alert-strip {
+      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 2px solid var(--accent);
+      padding: 0.8rem 1.1rem; margin-bottom: 1.6rem;
+    }
+    .as-title {
+      font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .as-pill {
+      font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 0.2rem 0.55rem; border-radius: 2px;
+    }
+    .as-pill.on  { background: rgba(39,174,96,0.12);  border: 1px solid rgba(39,174,96,0.3);  color: #6aba8a; }
+    .as-pill.off { background: rgba(192,57,43,0.10);  border: 1px solid rgba(192,57,43,0.3);  color: #e57373; }
+    .as-channels { font-size: 0.64rem; color: var(--text); letter-spacing: 0.04em; }
+    .as-channels span { color: var(--text-dim); }
+    .btn-test {
+      font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-dim);
+      background: transparent; border: 1px solid var(--border);
+      padding: 0.32rem 0.75rem; cursor: pointer; transition: all 0.15s;
+    }
+    .btn-test:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* flash messages */
+    .flash {
+      padding: 0.6rem 1rem; margin-bottom: 1rem; border-radius: 2px;
+      font-size: 0.7rem; letter-spacing: 0.04em;
+    }
+    .flash.success { background: rgba(39,174,96,0.1);  border: 1px solid rgba(39,174,96,0.3);  color: #6aba8a; }
+    .flash.error   { background: rgba(243,156,18,0.1); border: 1px solid rgba(243,156,18,0.3); color: #f0b858; }
+
     /* ── Stats strip ── */
     .stats-strip {
       display: grid;
@@ -296,6 +331,12 @@
 
 <main class="main">
 
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
   <!-- Page header -->
   <div class="page-head">
     <div>
@@ -308,6 +349,23 @@
       <strong>{{ entry_count }}</strong> entries
     </div>
   </div>
+
+  <!-- Real-time alerting status (real admin only) -->
+  {% if not is_intruder %}
+  <div class="alert-strip">
+    <span class="as-title">Real-Time Alerting</span>
+    {% if alert_enabled %}
+      <span class="as-pill on">● Active</span>
+      <span class="as-channels">Channels: {{ alert_channels | join(', ') }}</span>
+    {% else %}
+      <span class="as-pill off">● Not configured</span>
+      <span class="as-channels"><span>Set ALERT_TELEGRAM_*, ALERT_WEBHOOK_URL, or ALERT_SMTP_* to enable</span></span>
+    {% endif %}
+    <form method="POST" action="/admin/test-alert" style="margin:0 0 0 auto">
+      <button class="btn-test" type="submit">Send Test Alert</button>
+    </form>
+  </div>
+  {% endif %}
 
   <!-- Stats strip -->
   {% set honey_count  = entries | selectattr('event_type', 'eq', 'HONEY_LOGIN_GRANTED') | list | length %}
