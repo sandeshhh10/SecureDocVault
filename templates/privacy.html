@@ -80,7 +80,11 @@
 
 <header class="topbar">
   <a class="brand" href="/">Secure<span>Doc</span></a>
+  {% if logged_in %}
+  <a class="back-link" href="/dashboard">← Back to vault</a>
+  {% else %}
   <a class="back-link" href="/login">← Back to sign in</a>
+  {% endif %}
 </header>
 
 <main class="doc">
