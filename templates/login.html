@@ -15,7 +15,7 @@
       --accent:    #3b82f6;
       --accent-dk: #1d4ed8;
       --text:      #cbd5e1;
-      --text-dim:  #475569;
+      --text-dim:  #64748b;
       --text-hi:   #f1f5f9;
       --mono:      'DM Mono', monospace;
       --sans:      'Syne', sans-serif;
@@ -122,6 +122,15 @@
     .auth-footer a { color: var(--accent); text-decoration: none; }
     .auth-footer a:hover { text-decoration: underline; }
 
+    .auth-legal {
+      text-align: center; margin-top: 1.5rem; padding-top: 1.2rem;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono); font-size: 0.62rem;
+      color: var(--text-dim); letter-spacing: 0.05em;
+    }
+    .auth-legal a { color: var(--text-dim); text-decoration: none; }
+    .auth-legal a:hover { color: var(--accent); }
+
   </style>
 </head>
 <body>
@@ -165,6 +174,10 @@
     {% else %}
       Don't have an account? <a href="/register">Create one</a>
     {% endif %}
+  </div>
+
+  <div class="auth-legal">
+    © 2026 SecureDoc. All rights reserved. · <a href="/privacy">Privacy Policy</a>
   </div>
 
 </div>

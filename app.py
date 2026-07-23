@@ -279,6 +279,12 @@ def index():
     return redirect(url_for('login'))
 
 
+@app.route('/privacy')
+def privacy():
+    """Public privacy policy page (no authentication required)."""
+    return render_template('privacy.html')
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
